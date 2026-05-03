@@ -4,12 +4,16 @@
   "type": "module",
   "version": "0.0.0",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch --env-file=.env src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "deploy": "gcloud run deploy dp-proj-00-02-backend --source . --region us-central1 --allow-unauthenticated",
+    "deploy:logs": "gcloud run services logs read dp-proj-00-02-backend --region us-central1 --limit 50"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^4.21.1",
+    "firebase-admin": "^13.7.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -19,4 +23,3 @@
     "typescript": "^5.9.2"
   }
 }
-
