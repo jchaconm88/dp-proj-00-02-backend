@@ -23,8 +23,44 @@ Recomendación: crear una SA por entorno (dev/stg/prod) y evitar usar la default
 
 ## Local
 
+### Requisitos
+
+- Node.js (LTS)
+- npm
+- (Opcional) `gcloud` si vas a usar **ADC** en vez de JSON
+
+### Paso a paso
+
+1) Instala dependencias:
+
 ```bash
 npm install
+```
+
+2) Crea tu `.env` desde el ejemplo:
+
+- Copia `./.env.example` a `./.env`
+- Define al menos:
+  - `PORT` (default `8080`)
+  - `CORS_ORIGINS` (por ejemplo `http://localhost:5173,http://localhost:5174`)
+  - `FIREBASE_PROJECT_ID` (output `project_id` del ambiente en `dp-proj-00-02-infra`)
+
+3) Credenciales Firebase Admin SDK (elige una)
+
+- **Opción A (recomendada para dev local):** JSON de Service Account
+  - Descarga un JSON (temporal) del SA runtime del ambiente, o crea uno de dev con permisos mínimos.
+  - Configura `FIREBASE_SERVICE_ACCOUNT_PATH` apuntando al archivo.
+
+- **Opción B:** ADC (Application Default Credentials)
+  - Inicia sesión y actualiza ADC:
+
+```bash
+gcloud auth login --update-adc
+```
+
+4) Levanta el backend:
+
+```bash
 npm run dev
 ```
 
@@ -64,7 +100,10 @@ Puedes usar un **proxy del dev server** (Vite) para que el browser llame al mism
 
 ## Firebase Admin SDK (AdminAuthProject) — credenciales correctas
 
-En el modelo **unificado por ambiente**, Admin Auth y datos Web comparten el mismo **Firebase/GCP project**. En Cloud Run lo habitual es **ADC** con la SA runtime (sin JSON extra). Para **dev local** o depuración, podéis seguir usando `ADMIN_FIREBASE_SERVICE_ACCOUNT_JSON` / `WEB_FIREBASE_SERVICE_ACCOUNT_JSON` apuntando al mismo proyecto o a emuladores.
+En el modelo **unificado por ambiente**, Admin Auth y datos Web comparten el mismo **Firebase/GCP project**.
+
+- En Cloud Run lo habitual es **ADC** con la SA runtime (sin JSON extra).
+- En local, usa `FIREBASE_SERVICE_ACCOUNT_PATH` o `FIREBASE_SERVICE_ACCOUNT_JSON` (recomendado) o ADC.
 
 Debug temporal:
 
@@ -87,6 +126,7 @@ Terraform vive en **`dp-proj-00-02-infra`** (no en este repo). Tras `terraform a
 | `GCP_PROJECT_ID` | Variable | Output `project_id` del stack Terraform. |
 | `CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT` | Variable | Email de la SA runtime del stack. |
 | `CLOUD_RUN_SERVICE_NAME` | Variable | Opcional; por defecto `dp-proj-00-02-backend`. |
+| `CORS_ORIGINS` | Variable | **Orígenes del Admin/Web en producción** (coma-separados). Ej. `https://dp-proj-00-02-dev-xxxx-adm.firebaseapp.com,https://dp-proj-00-02-dev-xxxx-adm.web.app`. Sin esto, Cloud Run solo aplica el default de `server.ts` (localhost) y el browser verá errores CORS. |
 | `DEPLOY_ENVIRONMENT` | Variable (repo) | Si no usáis `workflow_dispatch`, entorno por defecto para pushes a `main` (p. ej. `dev`). |
 
 ## Docker (Cloud Run)

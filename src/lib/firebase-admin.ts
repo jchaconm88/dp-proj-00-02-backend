@@ -1,8 +1,7 @@
 import admin from "firebase-admin";
 import fs from "node:fs";
 
-let adminAuthApp: admin.app.App | null = null;
-let webDataApp: admin.app.App | null = null;
+let firebaseApp: admin.app.App | null = null;
 
 function tryParseServiceAccountJson(raw: string | undefined): admin.ServiceAccount | null {
   const trimmed = String(raw ?? "").trim();
@@ -35,65 +34,52 @@ function tryReadServiceAccountFromFile(pathLike: string | undefined): admin.Serv
 }
 
 /**
- * Firebase Admin App para el PROYECTO ADMIN (autenticación de empleados/admin).
- * Usa ADMIN_FIREBASE_PROJECT_ID + (opcional) ADMIN_FIREBASE_SERVICE_ACCOUNT_(PATH|JSON).
+ * Firebase Admin App (proyecto unificado por ambiente).
+ *
+ * Variables:
+ * - FIREBASE_PROJECT_ID (opcional si el JSON trae `project_id`)
+ * - FIREBASE_SERVICE_ACCOUNT_PATH (opcional)
+ * - FIREBASE_SERVICE_ACCOUNT_JSON (opcional)
+ *
+ * Nota: mantenemos helpers `getAdmin*` y `getWeb*` por compatibilidad interna,
+ * pero ambas rutas usan el mismo proyecto Firebase/GCP en el modelo unificado.
  */
-export function getAdminAuthApp() {
-  if (adminAuthApp) return adminAuthApp;
-  const projectId = process.env.ADMIN_FIREBASE_PROJECT_ID;
+export function getFirebaseApp() {
+  if (firebaseApp) return firebaseApp;
+  const projectId = String(process.env.FIREBASE_PROJECT_ID ?? "").trim();
   const sa =
-    tryReadServiceAccountFromFile(process.env.ADMIN_FIREBASE_SERVICE_ACCOUNT_PATH) ??
-    tryParseServiceAccountJson(process.env.ADMIN_FIREBASE_SERVICE_ACCOUNT_JSON);
+    tryReadServiceAccountFromFile(process.env.FIREBASE_SERVICE_ACCOUNT_PATH) ??
+    tryParseServiceAccountJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
   // eslint-disable-next-line no-console
-  console.log(`[firebase-admin] Initializing "admin-auth" app (projectId=${projectId || sa?.projectId || "ADC-default"})`);
-  adminAuthApp = admin.initializeApp(
+  console.log(
+    `[firebase-admin] Initializing app (projectId=${projectId || sa?.projectId || "ADC-default"})`
+  );
+  firebaseApp = admin.initializeApp(
     {
       projectId: projectId || sa?.projectId || undefined,
       credential: sa ? admin.credential.cert(sa) : admin.credential.applicationDefault(),
     },
-    "admin-auth"
+    "firebase"
   );
-  return adminAuthApp;
-}
-
-/**
- * Firebase Admin App para el PROYECTO WEB (datos de clientes, Firestore, etc).
- * Usa WEB_FIREBASE_PROJECT_ID + (opcional) WEB_FIREBASE_SERVICE_ACCOUNT_(PATH|JSON).
- */
-export function getWebDataApp() {
-  if (webDataApp) return webDataApp;
-  const projectId = process.env.WEB_FIREBASE_PROJECT_ID;
-  const sa =
-    tryReadServiceAccountFromFile(process.env.WEB_FIREBASE_SERVICE_ACCOUNT_PATH) ??
-    tryParseServiceAccountJson(process.env.WEB_FIREBASE_SERVICE_ACCOUNT_JSON);
-  // eslint-disable-next-line no-console
-  console.log(`[firebase-admin] Initializing "web-data" app (projectId=${projectId || sa?.projectId || "ADC-default"})`);
-  webDataApp = admin.initializeApp(
-    {
-      projectId: projectId || sa?.projectId || undefined,
-      credential: sa ? admin.credential.cert(sa) : admin.credential.applicationDefault(),
-    },
-    "web-data"
-  );
-  return webDataApp;
+  return firebaseApp;
 }
 
 /** Auth del proyecto Admin (para verifyIdToken de empleados). */
 export function getAdminAuth() {
-  return getAdminAuthApp().auth();
+  return getFirebaseApp().auth();
 }
 
 /** Firestore del proyecto Admin (datos del panel admin: cuentas, roles, etc). */
 export function getAdminFirestore() {
-  return getAdminAuthApp().firestore();
+  return getFirebaseApp().firestore();
 }
 
 /** Auth del proyecto Web (para verifyIdToken de clientes/usuarios web/mobile). */
 export function getWebAuth() {
-  return getWebDataApp().auth();
+  return getFirebaseApp().auth();
 }
 
 /** Firestore del proyecto Web (datos de la app: pedidos, clientes, etc). */
 export function getWebFirestore() {
-  return getWebDataApp().firestore();
+  return getFirebaseApp().firestore();
 }

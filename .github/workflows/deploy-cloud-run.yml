@@ -112,8 +112,14 @@ jobs:
             --allow-unauthenticated
             --quiet
           )
+          # CORS: lista separada por comas (mismo formato que src/server.ts). El delimitador ^:^
+          # evita que gcloud trocee mal el valor cuando hay varios orígenes.
+          if [[ -n "${CORS_ORIGINS_EFFECTIVE:-}" ]]; then
+            args+=(--update-env-vars "^:^CORS_ORIGINS:${CORS_ORIGINS_EFFECTIVE}")
+          fi
           gcloud "${args[@]}"
         env:
           GCP_PROJECT_EFFECTIVE: ${{ vars.GCP_PROJECT_ID }}
           CLOUD_RUN_RUNTIME_SA_EFFECTIVE: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
           CLOUD_RUN_SERVICE_NAME_EFFECTIVE: ${{ vars.CLOUD_RUN_SERVICE_NAME || 'dp-proj-00-02-backend' }}
+          CORS_ORIGINS_EFFECTIVE: ${{ vars.CORS_ORIGINS }}

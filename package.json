@@ -7,8 +7,8 @@
     "dev": "tsx watch --env-file=.env src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "deploy": "gcloud run deploy dp-proj-00-02-backend --source . --region us-central1 --project dp-proj-00-02-backend-q --allow-unauthenticated",
-    "deploy:logs": "gcloud run services logs read dp-proj-00-02-backend --region us-central1 --project dp-proj-00-02-backend-q --limit 50"
+    "deploy": "powershell -NoProfile -Command \"$p=$env:GCP_PROJECT_ID; if (-not $p) { throw 'Set GCP_PROJECT_ID' }; $r=($env:GCP_REGION); if (-not $r) { $r='us-central1' }; $s=($env:CLOUD_RUN_SERVICE_NAME); if (-not $s) { $s='dp-proj-00-02-backend' }; gcloud run deploy $s --source . --region $r --project $p --allow-unauthenticated\"",
+    "deploy:logs": "powershell -NoProfile -Command \"$p=$env:GCP_PROJECT_ID; if (-not $p) { throw 'Set GCP_PROJECT_ID' }; $r=($env:GCP_REGION); if (-not $r) { $r='us-central1' }; $s=($env:CLOUD_RUN_SERVICE_NAME); if (-not $s) { $s='dp-proj-00-02-backend' }; gcloud run services logs read $s --region $r --project $p --limit 50\""
   },
   "dependencies": {
     "dotenv": "^17.4.2",
