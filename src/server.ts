@@ -9,8 +9,9 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 
+// Coma (local) o | (útil en gcloud: --update-env-vars trocea por comas entre pares KEY=VALUE).
 const corsOrigins = String(process.env.CORS_ORIGINS ?? "http://localhost:5173,http://localhost:5174")
-  .split(",")
+  .split(/[,|]/)
   .map((s) => s.trim())
   .filter(Boolean);
 

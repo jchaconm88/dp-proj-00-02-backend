@@ -91,7 +91,7 @@ El Admin (browser) hace requests cross-origin (`localhost` → `run.app`) que di
 
 Variables:
 
-- `CORS_ORIGINS`: lista separada por comas de orígenes permitidos (ej. `http://localhost:5173,https://<admin>.web.app`).
+- `CORS_ORIGINS`: orígenes permitidos separados por **coma** o **`|`** (ej. `http://localhost:5173,https://<admin>.web.app`). En GitHub puedes seguir usando comas: el workflow las convierte a `|` al llamar a `gcloud`.
 - Evita `CORS_ORIGINS="*"` si vas a combinarlo con `Access-Control-Allow-Credentials` (no es compatible en browsers).
 
 ### Alternativa en desarrollo (sin depender de CORS)
@@ -126,7 +126,7 @@ Terraform vive en **`dp-proj-00-02-infra`** (no en este repo). Tras `terraform a
 | `GCP_PROJECT_ID` | Variable | Output `project_id` del stack Terraform. |
 | `CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT` | Variable | Email de la SA runtime del stack. |
 | `CLOUD_RUN_SERVICE_NAME` | Variable | Opcional; por defecto `dp-proj-00-02-backend`. |
-| `CORS_ORIGINS` | Variable | **Orígenes del Admin/Web en producción** (coma-separados). Ej. `https://dp-proj-00-02-dev-xxxx-adm.firebaseapp.com,https://dp-proj-00-02-dev-xxxx-adm.web.app`. Sin esto, Cloud Run solo aplica el default de `server.ts` (localhost) y el browser verá errores CORS. |
+| `CORS_ORIGINS` | Variable | **Orígenes del Admin/Web en producción** (coma o `|`). Ej. `https://...-adm.firebaseapp.com,https://...-adm.web.app`. El deploy convierte comas a `|` para `gcloud` (las comas rompen `--update-env-vars`). Sin esto, Cloud Run usa el default de `server.ts` (solo localhost). |
 | `DEPLOY_ENVIRONMENT` | Variable (repo) | Si no usáis `workflow_dispatch`, entorno por defecto para pushes a `main` (p. ej. `dev`). |
 
 ## Docker (Cloud Run)

@@ -112,10 +112,11 @@ jobs:
             --allow-unauthenticated
             --quiet
           )
-          # CORS: lista separada por comas (mismo formato que src/server.ts). El delimitador ^:^
-          # evita que gcloud trocee mal el valor cuando hay varios orígenes.
+          # gcloud interpreta la coma como separador entre VAR=val de --update-env-vars.
+          # Pasamos orígenes unidos con |; el backend acepta comas o | en CORS_ORIGINS.
           if [[ -n "${CORS_ORIGINS_EFFECTIVE:-}" ]]; then
-            args+=(--update-env-vars "^:^CORS_ORIGINS:${CORS_ORIGINS_EFFECTIVE}")
+            CORS_PIPE="${CORS_ORIGINS_EFFECTIVE//,/\|}"
+            args+=(--update-env-vars "CORS_ORIGINS=${CORS_PIPE}")
           fi
           gcloud "${args[@]}"
         env:
