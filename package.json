@@ -7,8 +7,8 @@
     "dev": "tsx watch --env-file=.env src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "deploy": "gcloud run deploy dp-proj-00-02-backend --source . --region us-central1 --allow-unauthenticated",
-    "deploy:logs": "gcloud run services logs read dp-proj-00-02-backend --region us-central1 --limit 50"
+    "deploy": "gcloud run deploy dp-proj-00-02-backend --source . --region us-central1 --project dp-proj-00-02-backend-q --allow-unauthenticated",
+    "deploy:logs": "gcloud run services logs read dp-proj-00-02-backend --region us-central1 --project dp-proj-00-02-backend-q --limit 50"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

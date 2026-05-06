@@ -1,0 +1,8 @@
+# Copia a terraform.tfvars (no lo subas a git) o usa -var en línea de comandos.
+# backend_project_id           = "dp-proj-00-02-backend-q"
+# web_data_project_id          = "layout-admin"
+# admin_firebase_project_id    = "dp-proj-00-02-admin-q"
+# region                       = "us-central1"
+# artifact_repository_id      = "dp-repo"
+# runtime_service_account_id  = "dp-proj-00-02-backend-sa"
+# github_deploy_service_account_id = "github-deploy-backend"

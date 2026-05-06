@@ -8,3 +8,10 @@ Thumbs.db
 /node_modules/
 /dist/
 
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/crash.log
+terraform/terraform.tfvars
+

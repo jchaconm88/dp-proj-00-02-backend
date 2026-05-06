@@ -2,9 +2,11 @@
 
 Backend (Cloud Run) basado en Express.
 
+**Infraestructura:** se define en **`dp-proj-00-02-infra`** (Terraform): un **proyecto GCP por ambiente** (`dev` / `qa` / `prd`) que incluye Cloud Run, Artifact Registry, Firestore, Auth y Hosting. El `project_id` concreto lo emiten los outputs de Terraform (sin IDs fijos en este README). En local, copia valores desde el Environment o desde `terraform output`.
+
 ## Requisitos de Service Account (Cloud Run)
 
-El backend correrá con una **Service Account** (recomendado: dedicada) y necesita permisos para operar sobre el proyecto Firebase de datos (`dp-proj-00-02-web`).
+El backend en Cloud Run usa la **SA runtime** creada por Terraform en el **mismo** `project_id` del ambiente (Firestore, Storage, Auth en ese proyecto). En local puedes seguir usando JSON por `ADMIN_FIREBASE_*` / `WEB_*` si no usas solo ADC.
 
 Roles típicos (mínimo razonable, ajusta según lo que active el backend):
 
@@ -62,18 +64,30 @@ Puedes usar un **proxy del dev server** (Vite) para que el browser llame al mism
 
 ## Firebase Admin SDK (AdminAuthProject) — credenciales correctas
 
-Si tu Cloud Run vive en un **proyecto GCP distinto** al Firebase del Admin, es fácil terminar con **ADC** (Application Default Credentials) apuntando al proyecto equivocado y fallar `verifyIdToken` (401 `invalid_id_token`).
-
-Opciones:
-
-- **Recomendado (producción)**: montar el JSON de service account del **AdminAuthProject** como secreto y exponerlo como env var `ADMIN_FIREBASE_SERVICE_ACCOUNT_JSON` (string JSON completo).
-- **Alternativa**: usar `GOOGLE_APPLICATION_CREDENTIALS` apuntando a un archivo (menos práctico en Cloud Run sin volúmenes).
-
-Para acceso cross-project a Firestore del proyecto Web, típicamente necesitarás **otra** credencial/SA con permisos en ese proyecto, o una SA con roles cross-project. En este repo puedes usar `WEB_FIREBASE_SERVICE_ACCOUNT_JSON` (opcional) para inicializar explícitamente el app `web-data`.
+En el modelo **unificado por ambiente**, Admin Auth y datos Web comparten el mismo **Firebase/GCP project**. En Cloud Run lo habitual es **ADC** con la SA runtime (sin JSON extra). Para **dev local** o depuración, podéis seguir usando `ADMIN_FIREBASE_SERVICE_ACCOUNT_JSON` / `WEB_FIREBASE_SERVICE_ACCOUNT_JSON` apuntando al mismo proyecto o a emuladores.
 
 Debug temporal:
 
 - `AUTH_DEBUG=1` agrega `message` al JSON de error (útil en staging; evitar en prod si expones detalles).
+
+## CI (GitHub Actions)
+
+Workflow: `.github/workflows/deploy-cloud-run.yml`.
+
+1. **Build** Node + Docker.
+2. **Deploy** Cloud Run con `--source` al **GitHub Environment** (`dev` / `qa` / `prd`) seleccionado.
+
+Terraform vive en **`dp-proj-00-02-infra`** (no en este repo). Tras `terraform apply`, sincronizad outputs a variables del Environment (`sync-github-env.sh` o a mano).
+
+**Secrets / variables por Environment:**
+
+| Nombre | Tipo | Uso |
+|--------|------|-----|
+| `GCP_SERVICE_ACCOUNT` | Secret | JSON de **`github-deploy-backend@…`** (creada por infra en ese `project_id`). |
+| `GCP_PROJECT_ID` | Variable | Output `project_id` del stack Terraform. |
+| `CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT` | Variable | Email de la SA runtime del stack. |
+| `CLOUD_RUN_SERVICE_NAME` | Variable | Opcional; por defecto `dp-proj-00-02-backend`. |
+| `DEPLOY_ENVIRONMENT` | Variable (repo) | Si no usáis `workflow_dispatch`, entorno por defecto para pushes a `main` (p. ej. `dev`). |
 
 ## Docker (Cloud Run)
 
@@ -90,20 +104,22 @@ Si cambias código TypeScript pero **no** vuelves a construir y publicar la imag
 Flujo típico (Artifact Registry):
 
 ```bash
+# Sustituye <GCP_PROJECT_ID> y región por los del ambiente (outputs de dp-proj-00-02-infra).
 # 1) Build + push con un tag inmutable (recomendado)
-docker build -t us-central1-docker.pkg.dev/<GCP_PROJECT>/<REPO>/dp-proj-00-02-backend:<GIT_SHA> .
-docker push us-central1-docker.pkg.dev/<GCP_PROJECT>/<REPO>/dp-proj-00-02-backend:<GIT_SHA>
+docker build -t us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/dp-repo/dp-proj-00-02-backend:<GIT_SHA> .
+docker push us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/dp-repo/dp-proj-00-02-backend:<GIT_SHA>
 
 # 2) Deploy apuntando al tag (no solo :latest)
 gcloud run deploy dp-proj-00-02-backend ^
-  --image us-central1-docker.pkg.dev/<GCP_PROJECT>/<REPO>/dp-proj-00-02-backend:<GIT_SHA> ^
-  --region us-central1
+  --image us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/dp-repo/dp-proj-00-02-backend:<GIT_SHA> ^
+  --region us-central1 ^
+  --project <GCP_PROJECT_ID>
 ```
 
 Alternativa (sin Docker local):
 
 ```bash
-gcloud builds submit --tag us-central1-docker.pkg.dev/<GCP_PROJECT>/<REPO>/dp-proj-00-02-backend:<GIT_SHA>
+gcloud builds submit --tag us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/dp-repo/dp-proj-00-02-backend:<GIT_SHA> --project <GCP_PROJECT_ID>
 ```
 
 Run:
