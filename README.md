@@ -66,6 +66,10 @@ npm run dev
 
 Healthcheck: `GET /healthz`
 
+### Firestore (índices compuestos)
+
+El listado canónico de índices compuestos del proyecto Firebase (mismo `project_id` que Web/Admin) es **`firestore.indexes.json`** en esta carpeta, con `firebase.json` apuntando solo a índices. Despliegue: `npm run dep-firestore:indexes` (desde `dp-proj-00-02-backend`, con `firebase login` y `.firebaserc` alineado al ambiente) o en el monorepo raíz `npm run deploy:indexes`.
+
 ### Troubleshooting: `invalid_grant` / `invalid_rapt` (ADC)
 
 Si al correr `npm run dev` ves un error tipo:

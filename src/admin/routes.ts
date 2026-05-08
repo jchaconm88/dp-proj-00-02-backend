@@ -40,23 +40,67 @@ adminRouter.use(requireAdminAuth);
 adminRouter.get("/me", async (req, res) => {
   try {
     const admin = (req as any).admin as
-      | { uid?: string; email?: string | null; accountId?: string; roleIds?: string[]; roleNames?: string[] }
+      | { uid?: string; email?: string | null; accountId?: string; adminRoleIds?: string[]; adminRoleNames?: string[] }
       | undefined;
     if (!admin?.uid) return res.status(401).json({ error: "unauthenticated" });
+    const accountId = String(admin.accountId ?? "").trim();
+    const hasAccount = Boolean(accountId) && accountId !== "pending";
     res.status(200).json({
       id: String(admin.uid),
       userId: String(admin.uid),
-      accountId: String(admin.accountId ?? "").trim(),
+      accountId,
       email: admin.email ?? "",
       displayName: "",
-      status: String(admin.accountId ?? "").trim() ? "active" : "inactive",
-      roleIds: Array.isArray(admin.roleIds) ? admin.roleIds : [],
-      roleNames: Array.isArray(admin.roleNames) ? admin.roleNames : [],
+      status: hasAccount ? "active" : "inactive",
+      adminRoleIds: Array.isArray(admin.adminRoleIds) ? admin.adminRoleIds : [],
+      adminRoleNames: Array.isArray(admin.adminRoleNames) ? admin.adminRoleNames : [],
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/me GET] failed:", msg);
     res.status(500).json({ error: "internal", message: msg });
+  }
+});
+
+/**
+ * Asegura que exista el doc staff en Firestore Admin `users/{uid}`.
+ * El docId siempre es el Firebase Auth UID.
+ */
+adminRouter.post("/users/me/upsert", async (req, res) => {
+  try {
+    const decoded = (req as any).auth as { uid?: string; email?: string; name?: string } | undefined;
+    const uid = String(decoded?.uid ?? (req as any)?.admin?.uid ?? "").trim();
+    if (!uid) return res.status(401).json({ error: "unauthenticated" });
+
+    const email = String(decoded?.email ?? (req as any)?.admin?.email ?? "").trim().toLowerCase();
+    const displayName = String(decoded?.name ?? "").trim();
+
+    const db = getAdminFirestore();
+    const now = new Date();
+
+    const uidRef = db.collection("users").doc(uid);
+    const uidSnap = await uidRef.get();
+
+    await uidRef.set(
+      {
+        userId: uid,
+        email,
+        displayName,
+        status: "active",
+        adminRoleIds: [],
+        adminRoleNames: [],
+        platform: ["admin"],
+        updatedAt: now,
+        ...(uidSnap.exists ? {} : { createdAt: now }),
+      },
+      { merge: true }
+    );
+
+    return res.status(200).json({ ok: true, uid, email });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[admin/users/me/upsert POST] failed:", msg);
+    return res.status(500).json({ error: "internal", message: msg });
   }
 });
 
@@ -75,7 +119,6 @@ function sequenceHttpStatus(error: string): number {
 }
 
 function generateAccountId(): string {
-  // uuid if available, else fallback
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const crypto = require("crypto") as typeof import("crypto");
@@ -101,6 +144,7 @@ async function ensureAdminRole(db: FirebaseFirestore.Firestore, accountId: strin
     name: "admin",
     description: "Administrador (bootstrap)",
     permissions: { "*": ["*"] },
+    platform: ["admin"],
     createdAt: now,
     updatedAt: now,
   });
@@ -123,8 +167,9 @@ async function upsertAdminUserDoc(db: FirebaseFirestore.Firestore, args: {
       email: String(email ?? "").trim(),
       displayName: String(displayName ?? "").trim(),
       status: "active",
-      roleIds: [adminRoleId],
-      roleNames: ["admin"],
+      adminRoleIds: [adminRoleId],
+      adminRoleNames: ["admin"],
+      platform: ["admin"],
       updatedAt: now,
       createdAt: now,
     },
@@ -887,18 +932,19 @@ adminRouter.post("/platform/users", async (req, res) => {
     const accountId = requireAccountId(req as any);
     const db = getAdminFirestore();
     const now = new Date();
-    const { id, userId, email = "", displayName = "", status = "active", roleIds = [], roleNames = [], ...rest } =
+    const { id, email = "", displayName = "", status = "active", adminRoleIds = [], adminRoleNames = [], ...rest } =
       req.body ?? {};
     if (!id) return res.status(400).json({ error: "id_required" });
     await db.collection("users").doc(String(id).trim()).set(
       {
-        userId: String(userId ?? id).trim(),
+        userId: String(id).trim(),
         accountId,
         email: String(email).trim(),
         displayName: String(displayName).trim(),
         status: String(status).trim() === "inactive" ? "inactive" : "active",
-        roleIds: Array.isArray(roleIds) ? roleIds : [],
-        roleNames: Array.isArray(roleNames) ? roleNames : [],
+        adminRoleIds: Array.isArray(adminRoleIds) ? adminRoleIds : [],
+        adminRoleNames: Array.isArray(adminRoleNames) ? adminRoleNames : [],
+        platform: ["admin"],
         ...rest,
         updatedAt: now,
         createdAt: now,
@@ -1055,8 +1101,8 @@ adminRouter.put("/platform/company-users/:id", async (req, res) => {
     if (body.userEmail !== undefined) patch.userEmail = String(body.userEmail).trim().toLowerCase();
     if (body.userDisplayName !== undefined) patch.userDisplayName = String(body.userDisplayName).trim();
     if (body.usersDocId !== undefined) patch.usersDocId = String(body.usersDocId).trim();
-    if (Array.isArray(body.roleIds)) patch.roleIds = body.roleIds.map((x: unknown) => String(x));
-    if (Array.isArray(body.roleNames)) patch.roleNames = body.roleNames.map((x: unknown) => String(x));
+    if (Array.isArray(body.adminRoleIds)) patch.adminRoleIds = body.adminRoleIds.map((x: unknown) => String(x));
+    if (Array.isArray(body.adminRoleNames)) patch.adminRoleNames = body.adminRoleNames.map((x: unknown) => String(x));
     if (body.status !== undefined) {
       patch.status = String(body.status).trim() === "inactive" ? "inactive" : "active";
     }
@@ -1090,14 +1136,32 @@ adminRouter.delete("/platform/company-users/:id", async (req, res) => {
 
 // ─── Firestore Web: app users (`users`) — distintos del staff en Admin ───────
 
+function userDocHasWebPlatform(data: Record<string, unknown>): boolean {
+  const p = data.platform;
+  return Array.isArray(p) && (p as unknown[]).map(String).includes("web");
+}
+
 adminRouter.get("/platform/web-users", async (_req, res) => {
   try {
     const req = _req as any;
     const accountId = requireAccountId(req);
     const wDb = getWebFirestore();
-    const snap = await wDb.collection("users").where("accountId", "==", accountId).get();
+    const snap = await wDb
+      .collection("users")
+      .where("accountId", "==", accountId)
+      .where("platform", "array-contains", "web")
+      .get();
     const items = snap.docs.map((doc) => {
       const data = doc.data() as Record<string, unknown>;
+      const webRoleIds = Array.isArray((data as any).webRoleIds)
+        ? (data as any).webRoleIds.map((x: unknown) => String(x))
+        : [];
+      const webRoleNames = Array.isArray((data as any).webRoleNames)
+        ? (data as any).webRoleNames.map((x: unknown) => String(x))
+        : [];
+      const platform = Array.isArray((data as any).platform)
+        ? (data as any).platform.map((x: unknown) => String(x))
+        : [];
       return {
         id: doc.id,
         authUid: String(data.authUid ?? doc.id).trim(),
@@ -1105,6 +1169,9 @@ adminRouter.get("/platform/web-users", async (_req, res) => {
         displayName: String(data.displayName ?? "").trim(),
         accountId: String(data.accountId ?? "").trim() || undefined,
         status: String(data.status ?? "active").trim(),
+        webRoleIds,
+        webRoleNames,
+        platform,
       };
     });
     res.status(200).json(items);
@@ -1124,6 +1191,7 @@ adminRouter.get("/platform/web-users/:id", async (req, res) => {
     if (!snap.exists) return res.status(404).json({ error: "not_found" });
     const data = snap.data() ?? {};
     if (String((data as any).accountId ?? "") !== accountId) return res.status(403).json({ error: "forbidden" });
+    if (!userDocHasWebPlatform(data as Record<string, unknown>)) return res.status(404).json({ error: "not_found" });
     res.status(200).json({ id: snap.id, ...data });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1190,6 +1258,7 @@ adminRouter.post("/platform/web-users", async (req, res) => {
       displayName: String(displayName).trim(),
       status: String(status).trim() === "inactive" ? "inactive" : "active",
       accountId,
+      platform: ["web"],
       updatedAt: now,
       createdAt: now,
     };
@@ -1446,12 +1515,13 @@ adminRouter.post("/onboarding/complete", async (req, res) => {
 
 /**
  * Crea en Firestore Web (batch atómico): empresa, primer usuario app, rol admin de empresa y company-member.
- * El doc `users` usa el email como id (mismo criterio que invitaciones).
+ * Crea primero el usuario en Firebase Auth para obtener el uid y usarlo como docId en users y company-users.
  */
 adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
   try {
     const accountId = requireAccountId(req as any);
     const wDb = getWebFirestore();
+    const wAuth = getWebAuth();
     const now = new Date();
     const companyId = String(req.body?.companyId ?? req.body?.id ?? "").trim();
     const name = String(req.body?.companyName ?? req.body?.name ?? "").trim();
@@ -1476,9 +1546,26 @@ adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
       return res.status(409).json({ error: "company_exists", message: "Ya existe una empresa con ese id" });
     }
 
+    // Crear usuario en Firebase Auth para obtener uid
+    let authUid: string;
+    let generatedPassword: string | null = null;
+    try {
+      const userRecord = await wAuth.getUserByEmail(webUserEmail);
+      authUid = userRecord.uid;
+    } catch {
+      generatedPassword = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      const newUser = await wAuth.createUser({
+        email: webUserEmail,
+        displayName: webUserDisplayName || undefined,
+        password: generatedPassword,
+        emailVerified: false,
+      });
+      authUid = newUser.uid;
+    }
+
     const roleRef = wDb.collection("roles").doc();
-    const userRef = wDb.collection("users").doc(webUserEmail);
-    const companyUserDocId = `${companyId}_${webUserEmail}`;
+    const userRef = wDb.collection("users").doc(authUid);
+    const companyUserDocId = `${companyId}_${authUid}`;
     const memberRef = wDb.collection("company-users").doc(companyUserDocId);
 
     const batch = wDb.batch();
@@ -1497,6 +1584,7 @@ adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
       name: "admin",
       description: "Administrador (bootstrap web)",
       permissions: { "*": ["*"] },
+      platform: ["web"],
       createdAt: now,
       updateAt: now,
       createBy: "admin",
@@ -1505,10 +1593,14 @@ adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
     batch.set(
       userRef,
       {
+        authUid,
         email: webUserEmail,
         displayName: webUserDisplayName,
         accountId,
         status: "active",
+        webRoleIds: [roleRef.id],
+        webRoleNames: ["admin"],
+        platform: ["web"],
         createdAt: now,
         updatedAt: now,
       },
@@ -1517,11 +1609,11 @@ adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
     batch.set(memberRef, {
       companyId,
       accountId,
-      userId: webUserEmail,
+      userId: authUid,
       userEmail: webUserEmail,
       ...(webUserDisplayName ? { userDisplayName: webUserDisplayName } : {}),
-      roleIds: [roleRef.id],
-      roleNames: ["admin"],
+      webRoleIds: [roleRef.id],
+      webRoleNames: ["admin"],
       status: "active",
       createAt: now,
       updateAt: now,
@@ -1533,9 +1625,11 @@ adminRouter.post("/onboarding/bootstrap-web-tenant", async (req, res) => {
     res.status(201).json({
       ok: true,
       companyId,
-      webUserId: webUserEmail,
+      webUserId: authUid,
+      webUserEmail,
       webRoleId: roleRef.id,
       companyUserDocId,
+      ...(generatedPassword ? { generatedPassword } : {}),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1560,21 +1654,7 @@ adminRouter.post("/web/invites", async (req, res) => {
     const db = getWebFirestore();
     const now = new Date();
 
-    // 1) Preauthorize in web/users (docId = email)
-    await db.collection("users").doc(email).set(
-      {
-        email,
-        displayName,
-        accountId,
-        status: "invited",
-        invitedAt: now,
-        updatedAt: now,
-        createdAt: now,
-      },
-      { merge: true }
-    );
-
-    // 2) Ensure web admin role for the company
+    // 1) Ensure web admin role for the company
     let adminRoleId: string | null = null;
     const roleSnap = await db
       .collection("roles")
@@ -1589,8 +1669,9 @@ adminRouter.post("/web/invites", async (req, res) => {
         companyId,
         accountId,
         name: "admin",
-        description: "Administrador (bootstrap web)",
+        description: "Administrador (invite)",
         permissions: { "*": ["*"] },
+        platform: ["web"],
         createdAt: now,
         updateAt: now,
         createBy: "admin",
@@ -1599,27 +1680,7 @@ adminRouter.post("/web/invites", async (req, res) => {
       adminRoleId = created.id;
     }
 
-    // 3) Create company-users doc (use email as userId until auth uid is resolved)
-    const companyUserDocId = `${companyId}_${email}`;
-    await db.collection("company-users").doc(companyUserDocId).set(
-      {
-        companyId,
-        accountId,
-        userId: email,
-        userEmail: email,
-        userDisplayName: displayName,
-        roleIds: [adminRoleId],
-        roleNames: ["admin"],
-        status: "active",
-        createAt: now,
-        updateAt: now,
-        createBy: "admin",
-        updateBy: "admin",
-      },
-      { merge: true }
-    );
-
-    // 4) Create invite token (stub: token returned; email send TBD)
+    // 2) Create invite token (docId = token for easy lookup)
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
     const inviteId = `${companyId}_${Date.now()}_${token.slice(0, 8)}`;
     await db.collection("invites").doc(inviteId).set(
@@ -1628,6 +1689,9 @@ adminRouter.post("/web/invites", async (req, res) => {
         email,
         companyId,
         accountId,
+        roleId: adminRoleId,
+        roleName: "admin",
+        displayName,
         status: "pending",
         token,
         createdAt: now,
@@ -1640,6 +1704,121 @@ adminRouter.post("/web/invites", async (req, res) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/web/invites POST] failed:", msg);
+    res.status(500).json({ error: "internal", message: msg });
+  }
+});
+
+// ─── Accept Web Invite ────────────────────────────────────────────────────
+
+adminRouter.post("/web/invites/accept", async (req, res) => {
+  try {
+    const token = String(req.body?.token ?? "").trim();
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
+    const displayName = String(req.body?.displayName ?? "").trim();
+    const password = String(req.body?.password ?? "").trim();
+
+    if (!token) return res.status(400).json({ error: "token_required" });
+    if (!email) return res.status(400).json({ error: "email_required" });
+
+    const db = getWebFirestore();
+    const wAuth = getWebAuth();
+    const now = new Date();
+
+    // Find invite by token
+    const inviteSnap = await db
+      .collection("invites")
+      .where("token", "==", token)
+      .where("email", "==", email)
+      .where("status", "==", "pending")
+      .limit(1)
+      .get();
+
+    if (inviteSnap.empty) {
+      return res.status(404).json({ error: "invite_not_found", message: "Invitación no válida o ya usada" });
+    }
+
+    const inviteDoc = inviteSnap.docs[0]!;
+    const invite = inviteDoc.data();
+    const companyId = String(invite.companyId ?? "");
+    const accountId = String(invite.accountId ?? "");
+    const roleId = String(invite.roleId ?? "");
+
+    if (!companyId || !accountId) {
+      return res.status(400).json({ error: "invite_data_invalid" });
+    }
+
+    // Create or get user in Firebase Auth
+    let authUid: string;
+    let generatedPassword: string | null = null;
+    try {
+      const userRecord = await wAuth.getUserByEmail(email);
+      authUid = userRecord.uid;
+    } catch {
+      generatedPassword = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      const newUser = await wAuth.createUser({
+        email,
+        displayName: displayName || undefined,
+        password: generatedPassword,
+        emailVerified: false,
+      });
+      authUid = newUser.uid;
+    }
+
+    // Create/update user doc with authUid as ID
+    const userRef = db.collection("users").doc(authUid);
+    await userRef.set(
+      {
+        authUid,
+        email,
+        displayName,
+        accountId,
+        status: "active",
+        webRoleIds: roleId ? [roleId] : [],
+        webRoleNames: ["admin"],
+        platform: ["web"],
+        invitedAt: invite.createdAt || now,
+        updatedAt: now,
+        createdAt: now,
+      },
+      { merge: true }
+    );
+
+    // Create company-users doc
+    const companyUserDocId = `${companyId}_${authUid}`;
+    await db.collection("company-users").doc(companyUserDocId).set(
+      {
+        companyId,
+        accountId,
+        userId: authUid,
+        userEmail: email,
+        userDisplayName: displayName,
+        webRoleIds: roleId ? [roleId] : [],
+        webRoleNames: ["admin"],
+        status: "active",
+        createAt: now,
+        updateAt: now,
+        createBy: "invite-accept",
+        updateBy: "invite-accept",
+      },
+      { merge: true }
+    );
+
+    // Mark invite as used
+    await inviteDoc.ref.update({
+      status: "accepted",
+      acceptedAt: now,
+      acceptedBy: authUid,
+      updatedAt: now,
+    });
+
+    res.status(200).json(
+      generatedPassword
+        ? { ok: true, authUid, email, companyId, accountId, generatedPassword }
+        : { ok: true, authUid, email, companyId, accountId }
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[admin/web/invites/accept POST] failed:", msg);
     res.status(500).json({ error: "internal", message: msg });
   }
 });

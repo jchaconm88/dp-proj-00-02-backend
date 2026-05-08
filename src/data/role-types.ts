@@ -23,6 +23,7 @@ export interface MergedRoleRecord {
   permission: string[];
   source: RoleSource;
   readonly: boolean;
+  platform?: string[];
   createBy?: string;
   createAt?: unknown;
   updateBy?: string;

@@ -41,6 +41,7 @@ function toMergedFromFirestore(
     permission: Array.isArray(data.permission) ? (data.permission as string[]).filter((x) => typeof x === "string") : [],
     source,
     readonly: false,
+    platform: Array.isArray(data.platform) ? data.platform.map((x: unknown) => String(x)) : [],
     createBy: data.createBy != null ? String(data.createBy) : undefined,
     createAt: data.createAt ?? data.createdAt,
     updateBy: data.updateBy != null ? String(data.updateBy) : undefined,
@@ -59,6 +60,7 @@ function toMergedFromCatalogWeb(row: CatalogRoleRecord, accountId: string, compa
     permission: [...row.permission],
     source: "default",
     readonly: true,
+    platform: ["web"],
   };
 }
 
@@ -72,6 +74,7 @@ function toMergedFromCatalogAdmin(row: CatalogRoleRecord, accountId: string): Me
     permission: [...row.permission],
     source: "default",
     readonly: true,
+    platform: ["admin"],
   };
 }
 
@@ -215,6 +218,7 @@ export async function createWebCustomRole(
   const permissions = normalizePermissions(body.permissions);
   const permission = Array.isArray(body.permission) ? (body.permission as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const description = String(body.description ?? "").trim();
+  const platform = Array.isArray(body.platform) ? (body.platform as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const created = await db.collection("roles").add({
     companyId: cid,
     accountId: aid,
@@ -222,6 +226,7 @@ export async function createWebCustomRole(
     description,
     permissions,
     permission,
+    platform,
     createdAt: now,
     updateAt: now,
     createBy: body.createBy != null ? String(body.createBy) : "api",
@@ -256,6 +261,11 @@ export async function updateWebCustomRole(
       ? (body.permission as unknown[]).filter((x): x is string => typeof x === "string")
       : [];
   }
+  if (body.platform !== undefined) {
+    patch.platform = Array.isArray(body.platform)
+      ? (body.platform as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+  }
   await db.collection("roles").doc(id).update(patch);
 }
 
@@ -284,12 +294,14 @@ export async function createAdminCustomRole(
   const permissions = normalizePermissions(body.permissions);
   const permission = Array.isArray(body.permission) ? (body.permission as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const description = String(body.description ?? "").trim();
+  const platform = Array.isArray(body.platform) ? (body.platform as unknown[]).filter((x): x is string => typeof x === "string") : [];
   const created = await db.collection("roles").add({
     accountId: aid,
     name,
     description,
     permissions,
     permission,
+    platform,
     createdAt: now,
     updatedAt: now,
   });
@@ -318,6 +330,11 @@ export async function updateAdminCustomRole(
   if (body.permission !== undefined) {
     patch.permission = Array.isArray(body.permission)
       ? (body.permission as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+  }
+  if (body.platform !== undefined) {
+    patch.platform = Array.isArray(body.platform)
+      ? (body.platform as unknown[]).filter((x): x is string => typeof x === "string")
       : [];
   }
   await db.collection("roles").doc(id).update(patch);

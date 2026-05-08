@@ -5,8 +5,8 @@ type AdminContext = {
   uid: string;
   email: string | null;
   accountId: string;
-  roleIds: string[];
-  roleNames: string[];
+  adminRoleIds: string[];
+  adminRoleNames: string[];
 };
 
 function toStringArray(v: unknown): string[] {
@@ -15,7 +15,6 @@ function toStringArray(v: unknown): string[] {
 
 async function loadAdminUserContext(uid: string): Promise<AdminContext | null> {
   const db = getAdminFirestore();
-  // Preferimos docId = uid, pero mantenemos fallback por `userId` para compatibilidad.
   const direct = await db.collection("users").doc(uid).get();
   const pick = (data: FirebaseFirestore.DocumentData | undefined): AdminContext | null => {
     if (!data) return null;
@@ -27,16 +26,11 @@ async function loadAdminUserContext(uid: string): Promise<AdminContext | null> {
       uid,
       email: typeof data.email === "string" ? data.email : null,
       accountId,
-      roleIds: toStringArray(data.roleIds),
-      roleNames: toStringArray(data.roleNames),
+      adminRoleIds: toStringArray(data.adminRoleIds),
+      adminRoleNames: toStringArray(data.adminRoleNames),
     };
   };
-  const fromDirect = pick(direct.exists ? direct.data() : undefined);
-  if (fromDirect) return fromDirect;
-
-  const q = await db.collection("users").where("userId", "==", uid).limit(1).get();
-  if (q.empty) return null;
-  return pick(q.docs[0]?.data());
+  return pick(direct.exists ? direct.data() : undefined);
 }
 
 /**
@@ -54,15 +48,32 @@ export const requireAdminAuth: RequestHandler = async (req, res, next) => {
     if (!uid) return res.status(401).json({ error: "unauthenticated", reason: "missing_uid" });
     const ctx = await loadAdminUserContext(uid);
     if (!ctx) {
-      // Permitir onboarding antes de que exista el doc `users` o `accountId`.
-      if (String(req.path ?? "").startsWith("/onboarding")) {
-        const accountId = String((req as any).body?.accountId ?? "").trim() || "pending";
+      // Crear usuario admin básico si no existe (registro inicial)
+      const reqPath = String(req.path ?? "");
+      if (reqPath.startsWith("/onboarding") || reqPath === "/me" || reqPath === "/users/me/upsert") {
+        const db = getAdminFirestore();
+        const now = new Date();
+        const email = typeof (decoded as any).email === "string" ? String((decoded as any).email).trim().toLowerCase() : null;
+        await db.collection("users").doc(uid).set(
+          {
+            userId: uid,
+            email: email || "",
+            displayName: "",
+            status: "inactive",
+            adminRoleIds: [],
+            adminRoleNames: [],
+            platform: ["admin"],
+            createdAt: now,
+            updatedAt: now,
+          },
+          { merge: true }
+        );
         (req as unknown as { admin?: AdminContext }).admin = {
           uid,
-          email: typeof (decoded as any).email === "string" ? String((decoded as any).email) : null,
-          accountId,
-          roleIds: [],
-          roleNames: [],
+          email,
+          accountId: "pending",
+          adminRoleIds: [],
+          adminRoleNames: [],
         };
         return next();
       }
