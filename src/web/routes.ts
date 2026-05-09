@@ -4300,8 +4300,7 @@ webRouter.delete("/transport/settlements/:id", async (req, res) => {
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     const itemsSnap = await db.collection("settlements").doc(id).collection("items").get();
-    const deletes: Promise<FirebaseFirestore.DocumentReference>[] = [];
-    itemsSnap.docs.forEach((item) => deletes.push(item.ref.delete()));
+    const deletes = itemsSnap.docs.map((item) => item.ref.delete());
     await Promise.all(deletes);
     await db.collection("settlements").doc(id).delete();
     return res.status(200).json({ ok: true });
