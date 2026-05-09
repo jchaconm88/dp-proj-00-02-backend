@@ -118,7 +118,10 @@ Debug temporal:
 Workflow: `.github/workflows/deploy-cloud-run.yml`.
 
 1. **Build** Node + Docker.
-2. **Deploy** Cloud Run con `--source` al **GitHub Environment** (`dev` / `qa` / `prd`) seleccionado.
+2. **Deploy** índices compuestos Firestore (`firebase deploy --only firestore:indexes`, canónico en este repo).
+3. **Deploy** Cloud Run con `--source` al **GitHub Environment** (`dev` / `qa` / `prd`) seleccionado.
+
+La SA de `GCP_SERVICE_ACCOUNT` (**`github-deploy-backend@…`**) debe tener en el proyecto GCP el rol **`roles/datastore.indexAdmin`** (Terraform en `dp-proj-00-02-infra` lo otorga al módulo de entorno). Si el paso de índices falla con **403**, aplica infra en ese ambiente o añade el rol manualmente hasta el próximo apply.
 
 Terraform vive en **`dp-proj-00-02-infra`** (no en este repo). Tras `terraform apply`, sincronizad outputs a variables del Environment (`sync-github-env.sh` o a mano).
 
