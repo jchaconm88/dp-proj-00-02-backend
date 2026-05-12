@@ -1,10 +1,23 @@
 import { Router } from "express";
 import { getAdminFirestore } from "../../../lib/firebase-admin.js";
 
+const ACCOUNT_STATUS_ALLOWED = new Set(["active", "inactive"]);
+
 function requireAccountId(req: any): string {
   const accountId = String(req?.admin?.accountId ?? "").trim();
   if (!accountId) throw new Error("missing_accountId");
   return accountId;
+}
+
+function asOptionalText(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const parsed = String(value).trim();
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function asAccountStatus(value: unknown): "active" | "inactive" | undefined {
+  const parsed = String(value ?? "").trim().toLowerCase();
+  return ACCOUNT_STATUS_ALLOWED.has(parsed) ? (parsed as "active" | "inactive") : undefined;
 }
 
 const router = Router();
@@ -29,11 +42,20 @@ router.post("/", async (req, res) => {
     const accountId = requireAccountId(req as any);
     const db = getAdminFirestore();
     const now = new Date();
-    const { name, status = "active", ...rest } = req.body ?? {};
-    if (!name) return res.status(400).json({ error: "name_required" });
+    const { name, status = "active", website, industry, location, ...rest } = req.body ?? {};
+    const parsedName = asOptionalText(name);
+    if (!parsedName) return res.status(400).json({ error: "name_required" });
+    const parsedStatus = asAccountStatus(status);
+    if (!parsedStatus) return res.status(400).json({ error: "invalid_status" });
+    const parsedWebsite = asOptionalText(website);
+    const parsedIndustry = asOptionalText(industry);
+    const parsedLocation = asOptionalText(location);
     await db.collection("accounts").doc(accountId).set({
-      name: String(name).trim(),
-      status: String(status),
+      name: parsedName,
+      status: parsedStatus,
+      ...(parsedWebsite !== undefined && { website: parsedWebsite }),
+      ...(parsedIndustry !== undefined && { industry: parsedIndustry }),
+      ...(parsedLocation !== undefined && { location: parsedLocation }),
       ...rest,
       createdAt: now,
       updatedAt: now,
@@ -52,9 +74,19 @@ router.put("/:id", async (req, res) => {
     const { id } = req.params;
     if (String(id) !== accountId) return res.status(403).json({ error: "forbidden" });
     const db = getAdminFirestore();
-    const { id: _id, createdAt: _ca, ...fields } = req.body ?? {};
+    const { id: _id, createdAt: _ca, status, website, industry, location, ...fields } = req.body ?? {};
+    const patch: Record<string, unknown> = { ...fields };
+    if (status !== undefined) {
+      const parsedStatus = asAccountStatus(status);
+      if (!parsedStatus) return res.status(400).json({ error: "invalid_status" });
+      patch.status = parsedStatus;
+    }
+    if (website !== undefined) patch.website = asOptionalText(website) ?? "";
+    if (industry !== undefined) patch.industry = asOptionalText(industry) ?? "";
+    if (location !== undefined) patch.location = asOptionalText(location) ?? "";
+
     await db.collection("accounts").doc(id).update({
-      ...fields,
+      ...patch,
       updatedAt: new Date(),
     });
     res.status(200).json({ ok: true, id });

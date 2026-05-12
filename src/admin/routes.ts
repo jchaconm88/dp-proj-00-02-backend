@@ -3,6 +3,7 @@ import { simpleRateLimit } from "../middlewares/rate-limit.js";
 import { requireAdminAuth } from "../middlewares/admin-auth.js";
 import { getAdminFirestore } from "../lib/firebase-admin.js";
 import dashboardRouter from "./routes/dashboard.js";
+import dashboardConfigRouter from "../features/dashboard/dashboard-config.routes.js";
 import onboardingRouter from "./routes/onboarding.js";
 import platformRouter from "./routes/platform/index.js";
 import systemRouter from "./routes/system/index.js";
@@ -16,6 +17,7 @@ adminRouter.use(simpleRateLimit({ windowMs: 60_000, max: 600 }));
 adminRouter.use(requireAdminAuth);
 
 adminRouter.use("/dashboard", dashboardRouter);
+adminRouter.use("/dashboard-config", dashboardConfigRouter);
 adminRouter.use("/onboarding", onboardingRouter);
 adminRouter.use("/platform", platformRouter);
 adminRouter.use("/system", systemRouter);

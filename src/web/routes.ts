@@ -17,12 +17,25 @@ import {
   roleHttpStatus,
   updateWebCustomRole,
 } from "../lib/merged-roles.service.js";
+import webDashboardConfigRouter from "../features/dashboard/web-dashboard-config.routes.js";
+import dashboardSnapshotRouter from "../features/dashboard/dashboard-snapshot.routes.js";
+import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+
+// NOTE: adjustCount is integrated for tracked collections that have create/delete endpoints:
+// trips, settlements, invoices, clients, employees, vehicles, drivers, orders.
+// The following tracked collections do NOT have create/delete endpoints yet:
+// - report-runs: integrate adjustCount(db, { accountId, companyId, metricKey: "report-runs", delta: 1 }) when endpoint is created
+// - email-log: integrate adjustCount(db, { accountId, companyId, metricKey: "emails-sent", delta: 1 }) when endpoint is created
+// - storage-usage: integrate adjustCount(db, { accountId, companyId, metricKey: "storage-bytes-used", delta: <bytes> }) when endpoint is created
 
 export const webRouter = Router();
 
 webRouter.get("/healthz", (_req, res) => res.status(200).json({ ok: true, scope: "web" }));
 
 webRouter.use(requireWebAuth);
+
+webRouter.use("/dashboard-config", webDashboardConfigRouter);
+webRouter.use("/dashboard", dashboardSnapshotRouter);
 
 /** Perfil del usuario de sesiÃ³n (doc `users/{authUid}` en Firestore Web). */
 webRouter.get("/me", async (req, res) => {
@@ -692,6 +705,8 @@ webRouter.post("/master/clients", async (req, res) => {
     };
     const docRef = db.collection("clients").doc();
     await docRef.set(doc);
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "clients-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -773,7 +788,7 @@ webRouter.put("/master/clients/:id", async (req, res) => {
 
 webRouter.delete("/master/clients/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("clients").doc(id).get();
@@ -782,6 +797,8 @@ webRouter.delete("/master/clients/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("clients").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "clients-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1259,6 +1276,8 @@ webRouter.post("/human-resource/employees", async (req, res) => {
       },
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "employees-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1314,13 +1333,15 @@ webRouter.put("/human-resource/employees/:id", async (req, res) => {
 
 webRouter.delete("/human-resource/employees/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("employees").doc(id).get();
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("employees").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "employees-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1647,6 +1668,8 @@ webRouter.post("/logistic/orders", async (req, res) => {
       status: ORDER_STATUSES.includes(String(body.status)) ? body.status : "pending",
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "orders-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1691,13 +1714,15 @@ webRouter.put("/logistic/orders/:id", async (req, res) => {
 
 webRouter.delete("/logistic/orders/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("orders").doc(id).get();
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("orders").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "orders-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -2345,6 +2370,8 @@ webRouter.post("/transport/vehicles", async (req, res) => {
       active: body.active !== false,
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "vehicles-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -2385,13 +2412,15 @@ webRouter.put("/transport/vehicles/:id", async (req, res) => {
 
 webRouter.delete("/transport/vehicles/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("vehicles").doc(id).get();
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("vehicles").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "vehicles-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3017,6 +3046,8 @@ webRouter.post("/transport/drivers", async (req, res) => {
       currentTripId: normalizeText(body.currentTripId) || "",
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "drivers-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3059,13 +3090,15 @@ webRouter.put("/transport/drivers/:id", async (req, res) => {
 
 webRouter.delete("/transport/drivers/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("drivers").doc(id).get();
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("drivers").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "drivers-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3420,6 +3453,8 @@ webRouter.post("/transport/trips", async (req, res) => {
       scheduledStart: normalizeText(body.scheduledStart) || null,
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "trips-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3458,13 +3493,15 @@ webRouter.put("/transport/trips/:id", async (req, res) => {
 
 webRouter.delete("/transport/trips/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("trips").doc(id).get();
     if (!current.exists) return res.status(200).json({ ok: true });
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("trips").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "trips-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4245,6 +4282,8 @@ webRouter.post("/transport/settlements", async (req, res) => {
       paymentStatus: SETTLEMENT_PAYMENT_STATUSES.includes(String(body.paymentStatus)) ? body.paymentStatus : "pending",
       createdAt: now, updatedAt: now,
     });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "settlements-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4293,7 +4332,7 @@ webRouter.put("/transport/settlements/:id", async (req, res) => {
 
 webRouter.delete("/transport/settlements/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("settlements").doc(id).get();
@@ -4303,6 +4342,8 @@ webRouter.delete("/transport/settlements/:id", async (req, res) => {
     const deletes = itemsSnap.docs.map((item) => item.ref.delete());
     await Promise.all(deletes);
     await db.collection("settlements").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "settlements-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4693,6 +4734,8 @@ webRouter.post("/billing/invoices", async (req, res) => {
     const body = req.body ?? {};
     const docRef = db.collection("invoices").doc();
     await docRef.set({ companyId, accountId, documentNo: String(body.documentNo ?? "").trim(), type: String(body.type ?? ""), payTerm: String(body.payTerm ?? ""), settlementId: String(body.settlementId ?? ""), settlement: String(body.settlement ?? ""), client: body.client && typeof body.client === "object" ? body.client : {}, company: body.company && typeof body.company === "object" ? body.company : {}, companyLocation: body.companyLocation && typeof body.companyLocation === "object" ? body.companyLocation : {}, issueDate: String(body.issueDate ?? ""), currency: String(body.currency ?? "PEN"), status: String(body.status ?? "draft"), totalPrice: Number(body.totalPrice) || 0, totalTax: Number(body.totalTax) || 0, totalAmount: Number(body.totalAmount) || 0, comment: String(body.comment ?? ""), zipUrl: String(body.zipUrl ?? ""), cdrUrl: String(body.cdrUrl ?? ""), pdfUrl: String(body.pdfUrl ?? ""), operationTypeCode: String(body.operationTypeCode ?? "0101"), ...(body.dueDate != null && { dueDate: body.dueDate }), createdAt: now, updatedAt: now });
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "invoices-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4728,7 +4771,7 @@ webRouter.put("/billing/invoices/:id", async (req, res) => {
 
 webRouter.delete("/billing/invoices/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const id = req.params.id;
     const current = await db.collection("invoices").doc(id).get();
@@ -4738,6 +4781,8 @@ webRouter.delete("/billing/invoices/:id", async (req, res) => {
     const [itemsSnap, creditsSnap] = await Promise.all([db.collection("invoices").doc(id).collection("invoiceItems").get(), db.collection("invoices").doc(id).collection("invoiceCredits").get()]);
     await Promise.all([...itemsSnap.docs.map((d) => d.ref.delete()), ...creditsSnap.docs.map((d) => d.ref.delete())]);
     await db.collection("invoices").doc(id).delete();
+    // Fire-and-forget: update tenant stats counter
+    adjustCount(db, { accountId, companyId, metricKey: "invoices-count", delta: -1 }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -5490,5 +5535,64 @@ webRouter.post("/reports/preview", async (req, res) => {
     console.error("[web/reports/preview POST] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+async function getAccountIdFromAuth(req: any): Promise<string> {
+  const uid = String(req?.auth?.uid ?? "").trim();
+  if (!uid) throw new Error("unauthenticated");
+  const db = getWebFirestore();
+  const companyUserSnap = await db
+    .collection("company-users")
+    .where("userId", "==", uid)
+    .limit(1)
+    .get();
+  if (companyUserSnap.empty) {
+    throw new Error("forbidden");
+  }
+  const data = companyUserSnap.docs[0]!.data();
+  let accountId = String(data.accountId ?? "").trim();
+  if (!accountId) {
+    const companyId = String(data.companyId ?? "").trim();
+    if (companyId) {
+      const company = await db.collection("companies").doc(companyId).get();
+      accountId = String(company.data()?.accountId ?? companyId).trim() || companyId;
+    }
+  }
+  if (!accountId) {
+    throw new Error("accountId_not_found");
+  }
+  return accountId;
+}
+
+webRouter.get("/dashboard/snapshot", async (req, res) => {
+  try {
+    const accountId = await getAccountIdFromAuth(req);
+    const periodRaw = String(req.query?.period ?? "").trim();
+    const period = /^\d{4}-\d{2}$/.test(periodRaw) ? periodRaw : new Date().toISOString().slice(0, 7);
+    const snapshotId = `${accountId}_${period}`;
+    const snap = await getWebFirestore().collection("dashboard-snapshots").doc(snapshotId).get();
+    if (!snap.exists) {
+      return res.status(200).json({
+        period,
+        cards: [],
+        activityReports: [],
+        activityTrips: [],
+        hasUsageForPeriod: false,
+      });
+    }
+    const data = snap.data() ?? {};
+    res.status(200).json({
+      period: String(data.period ?? period),
+      cards: Array.isArray(data.cards) ? data.cards : [],
+      activityReports: Array.isArray(data.activityReports) ? data.activityReports : [],
+      activityTrips: Array.isArray(data.activityTrips) ? data.activityTrips : [],
+      hasUsageForPeriod: Boolean(data.usage && typeof data.usage === "object" && Object.keys(data.usage).length > 0),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/dashboard/snapshot GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" || msg === "accountId_not_found" ? 403 : 500).json({ error: msg });
   }
 });
