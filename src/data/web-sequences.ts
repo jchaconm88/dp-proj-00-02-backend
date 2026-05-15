@@ -17,6 +17,14 @@ export const WEB_SEQUENCES_CATALOG: DefaultSequenceRecord[] = [
   { id: "web-default__resource-cost", entity: "resource-cost", prefix: "RCO", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
   { id: "web-default__position", entity: "position", prefix: "POS", digits: 4, format: "{prefix}-{number}", resetPeriod: "never", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
   { id: "web-default__employee", entity: "employee", prefix: "EMP", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__supplier", entity: "supplier", prefix: "PROV", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__product-category", entity: "product-category", prefix: "CAT", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__product", entity: "product", prefix: "PROD", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__warehouse", entity: "warehouse", prefix: "ALM", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__purchase-order", entity: "purchase-order", prefix: "OC", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__quotation", entity: "quotation", prefix: "COT", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__sale-order", entity: "sale-order", prefix: "OV", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
+  { id: "web-default__inventory-movement", entity: "inventory-movement", prefix: "MOV", digits: 6, format: DEFAULT_FORMAT, resetPeriod: "yearly", allowManualOverride: true, preventGaps: false, active: true, source: "default", readonly: true },
 ];
 
 export function getWebSequences(): DefaultSequenceRecord[] {

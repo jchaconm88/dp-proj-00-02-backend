@@ -1,5 +1,11 @@
 import { Router } from "express";
 import { getWebFirestore } from "../../../lib/firebase-admin.js";
+import {
+  getCountryByCode,
+  filterAllowedCurrenciesByCountry,
+  type CountryCode,
+} from "../../../data/countries.js";
+import { parseCurrencyCode, type CurrencyCode } from "../../../data/currencies.js";
 
 function requireAccountId(req: any): string {
   const accountId = String(req?.admin?.accountId ?? "").trim();
@@ -18,6 +24,30 @@ async function checkTaxIdUnique(taxId: string, excludeId?: string): Promise<bool
 }
 
 const router = Router();
+
+function normalizeCompanyCurrencyConfig(body: Record<string, unknown>): {
+  countryCode: CountryCode;
+  allowedCurrencies: CurrencyCode[];
+  defaultCurrency: CurrencyCode;
+} {
+  const countryCodeRaw = String(body.countryCode ?? "").trim().toUpperCase();
+  const country = getCountryByCode(countryCodeRaw);
+  if (!country) {
+    throw new Error("countryCode_invalid");
+  }
+
+  const allowedCurrencies = filterAllowedCurrenciesByCountry(country.code, body.allowedCurrencies);
+  if (!allowedCurrencies || allowedCurrencies.length === 0) {
+    throw new Error("allowedCurrencies_required");
+  }
+
+  const defaultCurrency = parseCurrencyCode(body.defaultCurrency);
+  if (!defaultCurrency || !allowedCurrencies.includes(defaultCurrency)) {
+    throw new Error("defaultCurrency_invalid");
+  }
+
+  return { countryCode: country.code, allowedCurrencies, defaultCurrency };
+}
 
 router.get("/", async (_req, res) => {
   try {
@@ -77,6 +107,7 @@ router.post("/", async (req, res) => {
     const status = body.status ?? "active";
     const taxId = body.taxId;
     const finalCode = String(body.code ?? "").trim();
+    const currencyConfig = normalizeCompanyCurrencyConfig(body);
     
     if (!name) return res.status(400).json({ error: "name_required" });
     if (!finalCode) return res.status(400).json({ error: "code_required" });
@@ -106,6 +137,9 @@ router.post("/", async (req, res) => {
       status: String(status),
       accountId,
       code: finalCode,
+      countryCode: currencyConfig.countryCode,
+      allowedCurrencies: currencyConfig.allowedCurrencies,
+      defaultCurrency: currencyConfig.defaultCurrency,
       ...(taxId !== undefined && taxId !== null && String(taxId).trim() !== "" ? { taxId: String(taxId).trim() } : {}),
       createdAt: now,
       updatedAt: now,
@@ -116,12 +150,18 @@ router.post("/", async (req, res) => {
       status: String(status),
       accountId,
       code: finalCode,
+      countryCode: currencyConfig.countryCode,
+      allowedCurrencies: currencyConfig.allowedCurrencies,
+      defaultCurrency: currencyConfig.defaultCurrency,
       ...(taxId !== undefined && taxId !== null && String(taxId).trim() !== "" ? { taxId: String(taxId).trim() } : {}),
     };
     res.status(201).json(created);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/companies POST] failed:", msg);
+    if (msg === "countryCode_invalid" || msg === "allowedCurrencies_required" || msg === "defaultCurrency_invalid") {
+      return res.status(422).json({ error: msg });
+    }
     res.status(500).json({ error: "internal", message: msg });
   }
 });
@@ -144,6 +184,13 @@ router.put("/:id", async (req, res) => {
       }
       fields.taxId = String(taxId).trim();
     }
+
+    if (req.body?.countryCode !== undefined || req.body?.allowedCurrencies !== undefined || req.body?.defaultCurrency !== undefined) {
+      const currencyConfig = normalizeCompanyCurrencyConfig(req.body ?? {});
+      fields.countryCode = currencyConfig.countryCode;
+      fields.allowedCurrencies = currencyConfig.allowedCurrencies;
+      fields.defaultCurrency = currencyConfig.defaultCurrency;
+    }
     
     await db.collection("companies").doc(id).update({
       ...fields,
@@ -153,6 +200,9 @@ router.put("/:id", async (req, res) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/companies PUT] failed:", msg);
+    if (msg === "countryCode_invalid" || msg === "allowedCurrencies_required" || msg === "defaultCurrency_invalid") {
+      return res.status(422).json({ error: msg });
+    }
     res.status(500).json({ error: "internal", message: msg });
   }
 });

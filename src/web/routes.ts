@@ -19,10 +19,36 @@ import {
 } from "../lib/merged-roles.service.js";
 import webDashboardConfigRouter from "../features/dashboard/web-dashboard-config.routes.js";
 import dashboardSnapshotRouter from "../features/dashboard/dashboard-snapshot.routes.js";
+import purchasingRouter from "./purchasing.router.js";
+import salesRouter from "./sales.router.js";
+import inventoryRouter from "./inventory.router.js";
 import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+import {
+  getDocumentTypesByCountryAndType,
+  parseDocumentTypeCategory,
+  parseDocumentTypeCountry,
+  getDocumentTypeByIdAndScope,
+} from "../data/document-types.js";
+import {
+  getCountryByCode,
+  filterAllowedCurrenciesByCountry,
+  type CountryCode,
+} from "../data/countries.js";
+import {
+  getCurrencyByCode,
+  getCurrenciesCatalog,
+  parseCurrencyCode,
+  type CurrencyCode,
+} from "../data/currencies.js";
+import { getUnitsOfMeasureCatalog } from "../data/units-of-measure.js";
+import {
+  getUbigeoByCodeAndCountry,
+  getUbigeosByCountry,
+  parseUbigeoCountry,
+} from "../data/ubigeos.js";
 
 // NOTE: adjustCount is integrated for tracked collections that have create/delete endpoints:
-// trips, settlements, invoices, clients, employees, vehicles, drivers, orders.
+// trips, settlements, invoices, clients, employees, vehicles, drivers, orders, suppliers, purchase-orders, quotations, sale-orders.
 // The following tracked collections do NOT have create/delete endpoints yet:
 // - report-runs: integrate adjustCount(db, { accountId, companyId, metricKey: "report-runs", delta: 1 }) when endpoint is created
 // - email-log: integrate adjustCount(db, { accountId, companyId, metricKey: "emails-sent", delta: 1 }) when endpoint is created
@@ -36,6 +62,9 @@ webRouter.use(requireWebAuth);
 
 webRouter.use("/dashboard-config", webDashboardConfigRouter);
 webRouter.use("/dashboard", dashboardSnapshotRouter);
+webRouter.use("/purchasing", purchasingRouter);
+webRouter.use("/sales", salesRouter);
+webRouter.use("/inventory", inventoryRouter);
 
 /** Perfil del usuario de sesiÃ³n (doc `users/{authUid}` en Firestore Web). */
 webRouter.get("/me", async (req, res) => {
@@ -127,6 +156,54 @@ function normalizeText(value: unknown): string | undefined {
   return out || undefined;
 }
 
+function toCompanyCurrencyConfig(d: Record<string, unknown>): {
+  countryCode: CountryCode | null;
+  allowedCurrencies: CurrencyCode[];
+  defaultCurrency: CurrencyCode | null;
+} {
+  const country = getCountryByCode(d.countryCode);
+  if (!country) return { countryCode: null, allowedCurrencies: [], defaultCurrency: null };
+  const allowed = filterAllowedCurrenciesByCountry(country.code, d.allowedCurrencies) ?? [];
+  const defaultCurrency = parseCurrencyCode(d.defaultCurrency);
+  if (!defaultCurrency || !allowed.includes(defaultCurrency)) {
+    return { countryCode: null, allowedCurrencies: [], defaultCurrency: null };
+  }
+  return { countryCode: country.code, allowedCurrencies: allowed, defaultCurrency };
+}
+
+async function getCompanyCurrencyConfigOrThrow(db: FirebaseFirestore.Firestore, companyId: string): Promise<{
+  countryCode: CountryCode;
+  allowedCurrencies: CurrencyCode[];
+  defaultCurrency: CurrencyCode;
+}> {
+  const snap = await db.collection("companies").doc(companyId).get();
+  if (!snap.exists) throw new Error("company_not_found");
+  const data = (snap.data() ?? {}) as Record<string, unknown>;
+  const cfg = toCompanyCurrencyConfig(data);
+  if (!cfg.countryCode || cfg.allowedCurrencies.length === 0 || !cfg.defaultCurrency) {
+    throw new Error("company_currency_config_missing");
+  }
+  return {
+    countryCode: cfg.countryCode,
+    allowedCurrencies: cfg.allowedCurrencies,
+    defaultCurrency: cfg.defaultCurrency,
+  };
+}
+
+async function normalizeCurrencyOrThrow(
+  db: FirebaseFirestore.Firestore,
+  companyId: string,
+  currencyRaw: unknown
+): Promise<CurrencyCode> {
+  const config = await getCompanyCurrencyConfigOrThrow(db, companyId);
+  const parsed = parseCurrencyCode(currencyRaw);
+  const selected = parsed ?? config.defaultCurrency;
+  if (!config.allowedCurrencies.includes(selected)) {
+    throw new Error("currency_not_allowed");
+  }
+  return selected;
+}
+
 function toCompanyUserRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record<string, unknown> {
   const data = (doc.data() ?? {}) as Record<string, unknown>;
   const inferredUserId = doc.id.includes("_") ? doc.id.split("_").slice(1).join("_").trim() : "";
@@ -180,6 +257,9 @@ webRouter.get("/system/users", async (req, res) => {
 });
 
 function toCompanyRecord(id: string, d: Record<string, unknown>): Record<string, unknown> {
+  const country = getCountryByCode(d.countryCode);
+  const allowed = country ? (filterAllowedCurrenciesByCountry(country.code, d.allowedCurrencies) ?? []) : [];
+  const defaultCurrency = parseCurrencyCode(d.defaultCurrency);
   return {
     id,
     name: String(d.name ?? ""),
@@ -193,6 +273,9 @@ function toCompanyRecord(id: string, d: Record<string, unknown>): Record<string,
     logoLightPath: normalizeText(d.logoLightPath),
     logoDarkUrl: normalizeText(d.logoDarkUrl),
     logoDarkPath: normalizeText(d.logoDarkPath),
+    countryCode: country?.code,
+    allowedCurrencies: allowed,
+    defaultCurrency: defaultCurrency && allowed.includes(defaultCurrency) ? defaultCurrency : undefined,
   };
 }
 
@@ -229,23 +312,53 @@ webRouter.get("/system/companies/:id", async (req, res) => {
     const snap = await db.collection("companies").doc(req.params.id).get();
     if (!snap.exists) return res.status(200).json(null);
     const data = snap.data() ?? {};
-    return res.status(200).json({
-      id: snap.id,
-      name: String(data.name ?? ""),
-      status: normalizeStatus(data.status),
-      accountId: normalizeText(data.accountId),
-      code: normalizeText(data.code),
-      taxId: normalizeText(data.taxId),
-      logoUrl: normalizeText(data.logoUrl),
-      logoPath: normalizeText(data.logoPath),
-      logoLightUrl: normalizeText(data.logoLightUrl),
-      logoLightPath: normalizeText(data.logoLightPath),
-      logoDarkUrl: normalizeText(data.logoDarkUrl),
-      logoDarkPath: normalizeText(data.logoDarkPath),
-    });
+    const company = toCompanyRecord(snap.id, data as Record<string, unknown>);
+    return res.status(200).json(company);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/system/companies/:id GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(500).json({ error: "internal", message: msg });
+  }
+});
+
+webRouter.get("/system/currencies", async (req, res) => {
+  try {
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+    if (!uid) return res.status(401).json({ error: "unauthenticated" });
+    const items = getCurrenciesCatalog().map((row) => ({
+      code: row.code,
+      name: row.name,
+      abbreviation: row.abbreviation,
+      symbol: row.symbol,
+      decimalDigits: row.decimalDigits,
+      formatLocale: row.formatLocale,
+    }));
+    return res.status(200).json({ items });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/system/currencies GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(500).json({ error: "internal", message: msg });
+  }
+});
+
+webRouter.get("/system/units-of-measure", async (req, res) => {
+  try {
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+    if (!uid) return res.status(401).json({ error: "unauthenticated" });
+    const items = getUnitsOfMeasureCatalog().map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      abbreviation: row.abbreviation,
+      sunatCode: row.sunatCode,
+      sunatName: row.sunatName,
+    }));
+    return res.status(200).json({ items });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/system/units-of-measure GET] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(500).json({ error: "internal", message: msg });
   }
@@ -427,30 +540,42 @@ webRouter.delete("/system/company-users/:id", async (req, res) => {
 
 // ===== Document types (master) =====
 
-const DOCUMENT_TYPE_CATEGORIES = ["identity", "transport", "vehicle"];
+function normalizeDocumentTypeScope(req: any): { country: string; type: "identity" | "billing" } | null {
+  const country = parseDocumentTypeCountry(req.query?.country);
+  const type = parseDocumentTypeCategory(req.query?.type);
+  if (!type) return null;
+  return { country, type };
+}
 
-function toDocumentTypeRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record<string, unknown> {
-  const data = doc.data() ?? {};
-  return {
-    id: doc.id,
-    name: normalizeText(data.name),
-    description: normalizeText(data.description),
-    type: DOCUMENT_TYPE_CATEGORIES.includes(String(data.type ?? "").trim()) ? data.type : "identity",
-    createdAt: data.createdAt instanceof Date ? data.createdAt.toISOString() : String(data.createdAt ?? ""),
-    updatedAt: data.updatedAt instanceof Date ? data.updatedAt.toISOString() : String(data.updatedAt ?? ""),
-  };
+function normalizeUbigeoScope(req: any): { country: "PE" } | null {
+  const country = parseUbigeoCountry(req.query?.country ?? req.body?.country ?? "PE");
+  if (!country) return null;
+  return { country };
+}
+
+function resolveUbigeo(rawCode: unknown, rawCountry: unknown): { code: string; name: string } | null {
+  const row = getUbigeoByCodeAndCountry(rawCode, rawCountry);
+  if (!row) return null;
+  return { code: row.code, name: row.name };
+}
+
+function resolveIdentityDocumentType(idRaw: unknown, req: any): { id: string; name: string } | null {
+  const id = String(idRaw ?? "").trim();
+  if (!id) return null;
+  const country = parseDocumentTypeCountry(req.body?.documentTypeCountry ?? req.query?.documentTypeCountry ?? "PE");
+  const type = parseDocumentTypeCategory(req.body?.documentTypeCategory ?? req.query?.documentTypeCategory ?? "identity");
+  if (type !== "identity") return null;
+  const match = getDocumentTypeByIdAndScope(id, country, "identity");
+  if (!match) return null;
+  return { id: match.id, name: match.name };
 }
 
 webRouter.get("/master/document-types", async (req, res) => {
   try {
-    const { accountId, companyId } = await requireCompanyScope(req as any);
-    const db = getWebFirestore();
-    const snap = await db
-      .collection("document-types")
-      .where("companyId", "==", companyId)
-      .where("accountId", "==", accountId)
-      .get();
-    const items = snap.docs.map(toDocumentTypeRecord);
+    await requireCompanyScope(req as any);
+    const scope = normalizeDocumentTypeScope(req as any);
+    if (!scope) return res.status(400).json({ error: "type_required", message: "Debe enviar type: identity o billing." });
+    const items = getDocumentTypesByCountryAndType(scope.country, scope.type);
     res.status(200).json({ items });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -461,108 +586,37 @@ webRouter.get("/master/document-types", async (req, res) => {
 });
 
 webRouter.get("/master/document-types/:id", async (req, res) => {
-  try {
-    const { companyId } = await requireCompanyScope(req as any);
-    const db = getWebFirestore();
-    const snap = await db.collection("document-types").doc(req.params.id).get();
-    if (!snap.exists) return res.status(200).json(null);
-    const data = snap.data() ?? {};
-    if (String(data.companyId ?? "").trim() !== companyId) {
-      return res.status(403).json({ error: "forbidden" });
-    }
-    return res.status(200).json(toDocumentTypeRecord(snap as any));
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "unknown_error";
-    console.error("[web/master/document-types/:id GET] failed:", msg);
-    if (e instanceof Error && e.stack) console.error(e.stack);
-    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
-  }
+  return res.status(410).json({ error: "gone", message: "Operacion no disponible para catalogo fijo." });
 });
 
 webRouter.post("/master/document-types", async (req, res) => {
-  try {
-    const { accountId, companyId } = await requireCompanyScope(req as any);
-    const db = getWebFirestore();
-    const now = new Date();
-    const name = normalizeText(req.body?.name);
-    const description = normalizeText(req.body?.description);
-    const type = DOCUMENT_TYPE_CATEGORIES.includes(String(req.body?.type ?? "").trim())
-      ? String(req.body.type).trim()
-      : "identity";
-    if (!name) return res.status(400).json({ error: "name_required" });
-
-    const snap = await db
-      .collection("document-types")
-      .where("companyId", "==", companyId)
-      .where("name", "==", name)
-      .limit(1)
-      .get();
-    if (!snap.empty) return res.status(409).json({ error: "duplicate_name", message: "Ya existe un tipo de documento con ese nombre." });
-
-    const docRef = db.collection("document-types").doc();
-    await docRef.set({
-      companyId,
-      accountId,
-      name,
-      description,
-      type,
-      createdAt: now,
-      updatedAt: now,
-    });
-    res.status(201).json({ ok: true, id: docRef.id });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "unknown_error";
-    console.error("[web/master/document-types POST] failed:", msg);
-    if (e instanceof Error && e.stack) console.error(e.stack);
-    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
-  }
+  return res.status(410).json({ error: "gone", message: "Operacion no disponible para catalogo fijo." });
 });
 
 webRouter.put("/master/document-types/:id", async (req, res) => {
-  try {
-    const { companyId } = await requireCompanyScope(req as any);
-    const db = getWebFirestore();
-    const { id } = req.params;
-    const current = await db.collection("document-types").doc(id).get();
-    if (!current.exists) return res.status(404).json({ error: "not_found" });
-    const currentData = current.data() ?? {};
-    if (String(currentData.companyId ?? "").trim() !== companyId) {
-      return res.status(403).json({ error: "forbidden" });
-    }
-    const now = new Date();
-    const patch: Record<string, unknown> = { updatedAt: now };
-    if (req.body?.name !== undefined) patch.name = normalizeText(req.body.name);
-    if (req.body?.description !== undefined) patch.description = normalizeText(req.body.description);
-    if (req.body?.type !== undefined) {
-      patch.type = DOCUMENT_TYPE_CATEGORIES.includes(String(req.body.type ?? "").trim())
-        ? String(req.body.type).trim()
-        : currentData.type;
-    }
-    await db.collection("document-types").doc(id).update(patch);
-    return res.status(200).json({ ok: true });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "unknown_error";
-    console.error("[web/master/document-types/:id PUT] failed:", msg);
-    if (e instanceof Error && e.stack) console.error(e.stack);
-    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
-  }
+  return res.status(410).json({ error: "gone", message: "Operacion no disponible para catalogo fijo." });
 });
 
 webRouter.delete("/master/document-types/:id", async (req, res) => {
+  return res.status(410).json({ error: "gone", message: "Operacion no disponible para catalogo fijo." });
+});
+
+webRouter.get("/master/ubigeos", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
-    const db = getWebFirestore();
-    const { id } = req.params;
-    const current = await db.collection("document-types").doc(id).get();
-    if (!current.exists) return res.status(200).json({ ok: true });
-    if (String(current.data()?.companyId ?? "").trim() !== companyId) {
-      return res.status(403).json({ error: "forbidden" });
+    await requireCompanyScope(req as any);
+    const scope = normalizeUbigeoScope(req as any);
+    if (!scope) {
+      return res.status(400).json({ error: "country_required", message: "Debe enviar country válido (ej. PE)." });
     }
-    await db.collection("document-types").doc(id).delete();
-    return res.status(200).json({ ok: true });
+    const items = getUbigeosByCountry(scope.country).map((item) => ({
+      code: item.code,
+      name: item.name,
+      country: item.country,
+    }));
+    return res.status(200).json({ items });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
-    console.error("[web/master/document-types/:id DELETE] failed:", msg);
+    console.error("[web/master/ubigeos GET] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }
@@ -660,6 +714,10 @@ webRouter.post("/master/clients", async (req, res) => {
     const body = req.body ?? {};
     const businessName = normalizeText(body.businessName);
     if (!businessName) return res.status(400).json({ error: "businessName_required" });
+    const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+    if (!documentType) {
+      return res.status(400).json({ error: "documentTypeId_invalid" });
+    }
     const code = normalizeText(body.code);
     const contact = body.contact && typeof body.contact === "object" ? (body.contact as any) : {};
     const billing = body.billing && typeof body.billing === "object" ? (body.billing as any) : {};
@@ -671,8 +729,8 @@ webRouter.post("/master/clients", async (req, res) => {
       code,
       businessName,
       commercialName: normalizeText(body.commercialName),
-      documentTypeId: normalizeText(body.documentTypeId),
-      documentType: normalizeText(body.documentType),
+      documentTypeId: documentType.id,
+      documentType: documentType.name,
       documentNumber: normalizeText(body.documentNumber),
       contact: {
         contactName: normalizeText(contact.contactName),
@@ -730,12 +788,17 @@ webRouter.put("/master/clients/:id", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updatedAt: now };
-    const safeFields = [
-      "code", "businessName", "commercialName", "documentTypeId", "documentType",
-      "documentNumber", "status",
-    ];
+    const safeFields = ["code", "businessName", "commercialName", "documentNumber", "status"];
     for (const f of safeFields) {
       if (body[f] !== undefined) patch[f] = normalizeText(body[f]);
+    }
+    if (body.documentTypeId !== undefined) {
+      const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+      if (!documentType) {
+        return res.status(400).json({ error: "documentTypeId_invalid" });
+      }
+      patch.documentTypeId = documentType.id;
+      patch.documentType = documentType.name;
     }
     if (body.contact !== undefined && body.contact !== null) {
       const c = body.contact as any;
@@ -1246,6 +1309,10 @@ webRouter.post("/human-resource/employees", async (req, res) => {
     if (!body.firstName?.trim() || !body.lastName?.trim()) {
       return res.status(400).json({ error: "names_required" });
     }
+    const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+    if (!documentType) {
+      return res.status(400).json({ error: "documentTypeId_invalid" });
+    }
     const payroll = body.payroll && typeof body.payroll === "object" ? body.payroll : {};
     const benefits = body.benefits && typeof body.benefits === "object" ? body.benefits : {};
     const docRef = db.collection("employees").doc();
@@ -1255,8 +1322,8 @@ webRouter.post("/human-resource/employees", async (req, res) => {
       firstName: String(body.firstName ?? "").trim(),
       lastName: String(body.lastName ?? "").trim(),
       documentNo: normalizeText(body.documentNo),
-      documentTypeId: normalizeText(body.documentTypeId),
-      documentType: normalizeText(body.documentType),
+      documentTypeId: documentType.id,
+      documentType: documentType.name,
       phone: normalizeText(body.phone),
       email: normalizeText(body.email),
       positionId: normalizeText(body.positionId),
@@ -1299,9 +1366,17 @@ webRouter.put("/human-resource/employees/:id", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updatedAt: now };
-    const simple = ["code", "firstName", "lastName", "documentNo", "documentTypeId", "documentType", "phone", "email", "positionId", "position", "hireDate"];
+    const simple = ["code", "firstName", "lastName", "documentNo", "phone", "email", "positionId", "position", "hireDate"];
     for (const f of simple) {
       if (body[f] !== undefined) patch[f] = normalizeText(body[f]);
+    }
+    if (body.documentTypeId !== undefined) {
+      const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+      if (!documentType) {
+        return res.status(400).json({ error: "documentTypeId_invalid" });
+      }
+      patch.documentTypeId = documentType.id;
+      patch.documentType = documentType.name;
     }
     if (body.status !== undefined) patch.status = EMPLOYEE_STATUSES.includes(String(body.status)) ? body.status : currentData.status;
     if (body.payroll !== undefined && body.payroll !== null) {
@@ -1430,8 +1505,12 @@ webRouter.post("/human-resource/resources", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     if (!body.firstName?.trim() || !body.lastName?.trim()) return res.status(400).json({ error: "names_required" });
+    const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+    if (!documentType) {
+      return res.status(400).json({ error: "documentTypeId_invalid" });
+    }
     const docRef = db.collection("resources").doc();
-    await docRef.set({ companyId, accountId, code: normalizeText(body.code), firstName: String(body.firstName ?? "").trim(), lastName: String(body.lastName ?? "").trim(), documentNo: normalizeText(body.documentNo), documentTypeId: normalizeText(body.documentTypeId), documentType: normalizeText(body.documentType), phone: normalizeText(body.phone), email: normalizeText(body.email), positionId: normalizeText(body.positionId), position: normalizeText(body.position), hireDate: normalizeText(body.hireDate), engagementType: RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : "sporadic", status: RESOURCE_STATUSES.includes(String(body.status)) ? body.status : "active", createdAt: now, updatedAt: now });
+    await docRef.set({ companyId, accountId, code: normalizeText(body.code), firstName: String(body.firstName ?? "").trim(), lastName: String(body.lastName ?? "").trim(), documentNo: normalizeText(body.documentNo), documentTypeId: documentType.id, documentType: documentType.name, phone: normalizeText(body.phone), email: normalizeText(body.email), positionId: normalizeText(body.positionId), position: normalizeText(body.position), hireDate: normalizeText(body.hireDate), engagementType: RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : "sporadic", status: RESOURCE_STATUSES.includes(String(body.status)) ? body.status : "active", createdAt: now, updatedAt: now });
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1453,8 +1532,16 @@ webRouter.put("/human-resource/resources/:id", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updatedAt: now };
-    for (const f of ["code", "firstName", "lastName", "documentNo", "documentTypeId", "documentType", "phone", "email", "positionId", "position", "hireDate"]) {
+    for (const f of ["code", "firstName", "lastName", "documentNo", "phone", "email", "positionId", "position", "hireDate"]) {
       if (body[f] !== undefined) patch[f] = normalizeText(body[f]);
+    }
+    if (body.documentTypeId !== undefined) {
+      const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+      if (!documentType) {
+        return res.status(400).json({ error: "documentTypeId_invalid" });
+      }
+      patch.documentTypeId = documentType.id;
+      patch.documentType = documentType.name;
     }
     if (body.engagementType !== undefined) patch.engagementType = RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : currentData.engagementType;
     if (body.status !== undefined) patch.status = RESOURCE_STATUSES.includes(String(body.status)) ? body.status : currentData.status;
@@ -2800,8 +2887,12 @@ webRouter.post("/human-resource/resources", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     if (!body.firstName?.trim() || !body.lastName?.trim()) return res.status(400).json({ error: "names_required" });
+    const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+    if (!documentType) {
+      return res.status(400).json({ error: "documentTypeId_invalid" });
+    }
     const docRef = db.collection("resources").doc();
-    await docRef.set({ companyId, accountId, code: normalizeText(body.code), firstName: String(body.firstName ?? "").trim(), lastName: String(body.lastName ?? "").trim(), documentNo: normalizeText(body.documentNo), documentTypeId: normalizeText(body.documentTypeId), documentType: normalizeText(body.documentType), phone: normalizeText(body.phone), email: normalizeText(body.email), positionId: normalizeText(body.positionId), position: normalizeText(body.position), hireDate: normalizeText(body.hireDate), engagementType: RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : "sporadic", status: RESOURCE_STATUSES.includes(String(body.status)) ? body.status : "active", createdAt: now, updatedAt: now });
+    await docRef.set({ companyId, accountId, code: normalizeText(body.code), firstName: String(body.firstName ?? "").trim(), lastName: String(body.lastName ?? "").trim(), documentNo: normalizeText(body.documentNo), documentTypeId: documentType.id, documentType: documentType.name, phone: normalizeText(body.phone), email: normalizeText(body.email), positionId: normalizeText(body.positionId), position: normalizeText(body.position), hireDate: normalizeText(body.hireDate), engagementType: RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : "sporadic", status: RESOURCE_STATUSES.includes(String(body.status)) ? body.status : "active", createdAt: now, updatedAt: now });
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -2823,8 +2914,16 @@ webRouter.put("/human-resource/resources/:id", async (req, res) => {
     const now = new Date();
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updatedAt: now };
-    for (const f of ["code", "firstName", "lastName", "documentNo", "documentTypeId", "documentType", "phone", "email", "positionId", "position", "hireDate"]) {
+    for (const f of ["code", "firstName", "lastName", "documentNo", "phone", "email", "positionId", "position", "hireDate"]) {
       if (body[f] !== undefined) patch[f] = normalizeText(body[f]);
+    }
+    if (body.documentTypeId !== undefined) {
+      const documentType = resolveIdentityDocumentType(body.documentTypeId, req as any);
+      if (!documentType) {
+        return res.status(400).json({ error: "documentTypeId_invalid" });
+      }
+      patch.documentTypeId = documentType.id;
+      patch.documentType = documentType.name;
     }
     if (body.engagementType !== undefined) patch.engagementType = RESOURCE_ENGAGEMENT_TYPES.includes(String(body.engagementType)) ? body.engagementType : currentData.engagementType;
     if (body.status !== undefined) patch.status = RESOURCE_STATUSES.includes(String(body.status)) ? body.status : currentData.status;
@@ -3561,6 +3660,10 @@ webRouter.post("/transport/trips/:tripId/trip-stops", async (req, res) => {
     if (String(tripSnap.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     const now = new Date();
     const body = req.body ?? {};
+    const ubigeo = resolveUbigeo(body.districtId, "PE");
+    if (!ubigeo) {
+      return res.status(422).json({ error: "districtId_invalid", message: "districtId no existe en catálogo ubigeos." });
+    }
     const stopId = String(body.id ?? "").trim().toLowerCase().replace(/\s+/g, "-") || `stop-${Date.now()}`;
     await db.collection("trips").doc(tripId).collection("tripStops").doc(stopId).set({
       companyId, accountId,
@@ -3569,8 +3672,8 @@ webRouter.post("/transport/trips/:tripId/trip-stops", async (req, res) => {
       type: ["origin", "pickup", "delivery", "checkpoint", "rest"].includes(String(body.type)) ? body.type : "checkpoint",
       name: normalizeText(body.name),
       externalDocument: normalizeText(body.externalDocument),
-      districtId: normalizeText(body.districtId),
-      districtName: normalizeText(body.districtName),
+      districtId: ubigeo.code,
+      districtName: ubigeo.name,
       observations: normalizeText(body.observations),
       lat: Number(body.lat) || 0,
       lng: Number(body.lng) || 0,
@@ -3607,8 +3710,16 @@ webRouter.put("/transport/trips/:tripId/trip-stops/:stopId", async (req, res) =>
     if (body.type !== undefined) patch.type = ["origin", "pickup", "delivery", "checkpoint", "rest"].includes(String(body.type)) ? body.type : current.data()?.type;
     if (body.name !== undefined) patch.name = normalizeText(body.name);
     if (body.externalDocument !== undefined) patch.externalDocument = normalizeText(body.externalDocument);
-    if (body.districtId !== undefined) patch.districtId = normalizeText(body.districtId);
-    if (body.districtName !== undefined) patch.districtName = normalizeText(body.districtName);
+    if (body.districtId !== undefined) {
+      const ubigeo = resolveUbigeo(body.districtId, "PE");
+      if (!ubigeo) {
+        return res.status(422).json({ error: "districtId_invalid", message: "districtId no existe en catálogo ubigeos." });
+      }
+      patch.districtId = ubigeo.code;
+      patch.districtName = ubigeo.name;
+    } else if (body.districtName !== undefined) {
+      patch.districtName = normalizeText(body.districtName);
+    }
     if (body.observations !== undefined) patch.observations = normalizeText(body.observations);
     if (body.lat !== undefined) patch.lat = Number(body.lat) || 0;
     if (body.lng !== undefined) patch.lng = Number(body.lng) || 0;
@@ -4649,7 +4760,7 @@ function toInvoiceRecord(doc: FirebaseFirestore.DocumentSnapshot): Record<string
   const client = (d.client && typeof d.client === "object") ? (d.client as Record<string, unknown>) : {};
   const company = (d.company && typeof d.company === "object") ? (d.company as Record<string, unknown>) : {};
   const companyLocation = (d.companyLocation && typeof d.companyLocation === "object") ? (d.companyLocation as Record<string, unknown>) : {};
-  return { id: doc.id, documentNo: String(d.documentNo ?? ""), type: String(d.type ?? ""), payTerm: String(d.payTerm ?? ""), settlementId: String(d.settlementId ?? ""), settlement: String(d.settlement ?? ""), client: { id: String(client.id ?? ""), name: String(client.name ?? ""), businessName: String(client.businessName ?? ""), identityDocumentNo: String(client.identityDocumentNo ?? ""), phoneNumber: String(client.phoneNumber ?? ""), emailAddress: String(client.emailAddress ?? ""), homeAddress: String(client.homeAddress ?? "") }, company: { id: String(company.id ?? ""), name: String(company.name ?? ""), businessName: String(company.businessName ?? ""), identityDocumentNo: String(company.identityDocumentNo ?? ""), emailAddress: String(company.emailAddress ?? ""), logoUrl: String(company.logoUrl ?? "") }, companyLocation: { name: String(companyLocation.name ?? ""), description: String(companyLocation.description ?? ""), ubigeo: String(companyLocation.ubigeo ?? ""), city: String(companyLocation.city ?? ""), country: String(companyLocation.country ?? ""), district: String(companyLocation.district ?? ""), address: String(companyLocation.address ?? "") }, issueDate: String(d.issueDate ?? ""), currency: String(d.currency ?? ""), status: String(d.status ?? ""), totalPrice: Number(d.totalPrice) || 0, totalTax: Number(d.totalTax) || 0, totalAmount: Number(d.totalAmount) || 0, comment: String(d.comment ?? ""), zipUrl: String(d.zipUrl ?? ""), cdrUrl: String(d.cdrUrl ?? ""), pdfUrl: String(d.pdfUrl ?? ""), operationTypeCode: String(d.operationTypeCode ?? "0101"), ...(d.dueDate != null && { dueDate: String(d.dueDate) }), ...(d.issueBlockReason != null && { issueBlockReason: String(d.issueBlockReason).trim() }) };
+  return { id: doc.id, documentNo: String(d.documentNo ?? ""), type: String(d.type ?? ""), payTerm: String(d.payTerm ?? ""), settlementId: String(d.settlementId ?? ""), settlement: String(d.settlement ?? ""), client: { id: String(client.id ?? ""), name: String(client.name ?? ""), businessName: String(client.businessName ?? ""), identityDocumentNo: String(client.identityDocumentNo ?? ""), phoneNumber: String(client.phoneNumber ?? ""), emailAddress: String(client.emailAddress ?? ""), homeAddress: String(client.homeAddress ?? "") }, company: { id: String(company.id ?? ""), name: String(company.name ?? ""), businessName: String(company.businessName ?? ""), identityDocumentNo: String(company.identityDocumentNo ?? ""), emailAddress: String(company.emailAddress ?? ""), logoUrl: String(company.logoUrl ?? "") }, companyLocation: { name: String(companyLocation.name ?? ""), description: String(companyLocation.description ?? ""), ubigeo: String(companyLocation.ubigeo ?? ""), city: String(companyLocation.city ?? ""), country: String(companyLocation.country ?? ""), district: String(companyLocation.district ?? ""), address: String(companyLocation.address ?? "") }, issueDate: String(d.issueDate ?? ""), currency: String(d.currency ?? ""), status: String(d.status ?? ""), totalPrice: Number(d.totalPrice) || 0, totalTax: Number(d.totalTax) || 0, totalAmount: Number(d.totalAmount) || 0, comment: String(d.comment ?? ""), zipUrl: String(d.zipUrl ?? ""), cdrUrl: String(d.cdrUrl ?? ""), pdfUrl: String(d.pdfUrl ?? ""), operationTypeCode: String(d.operationTypeCode ?? "0101"), ...(d.dueDate != null && { dueDate: String(d.dueDate) }), ...(d.issueBlockReason != null && { issueBlockReason: String(d.issueBlockReason).trim() }), ...(d.saleOrderId && { saleOrderId: String(d.saleOrderId) }), ...(d.saleOrderCode && { saleOrderCode: String(d.saleOrderCode) }) };
 }
 
 function toInvoiceItemRecord(doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> {
@@ -4732,8 +4843,9 @@ webRouter.post("/billing/invoices", async (req, res) => {
     const db = getWebFirestore();
     const now = new Date();
     const body = req.body ?? {};
+    const currency = await normalizeCurrencyOrThrow(db, companyId, body.currency);
     const docRef = db.collection("invoices").doc();
-    await docRef.set({ companyId, accountId, documentNo: String(body.documentNo ?? "").trim(), type: String(body.type ?? ""), payTerm: String(body.payTerm ?? ""), settlementId: String(body.settlementId ?? ""), settlement: String(body.settlement ?? ""), client: body.client && typeof body.client === "object" ? body.client : {}, company: body.company && typeof body.company === "object" ? body.company : {}, companyLocation: body.companyLocation && typeof body.companyLocation === "object" ? body.companyLocation : {}, issueDate: String(body.issueDate ?? ""), currency: String(body.currency ?? "PEN"), status: String(body.status ?? "draft"), totalPrice: Number(body.totalPrice) || 0, totalTax: Number(body.totalTax) || 0, totalAmount: Number(body.totalAmount) || 0, comment: String(body.comment ?? ""), zipUrl: String(body.zipUrl ?? ""), cdrUrl: String(body.cdrUrl ?? ""), pdfUrl: String(body.pdfUrl ?? ""), operationTypeCode: String(body.operationTypeCode ?? "0101"), ...(body.dueDate != null && { dueDate: body.dueDate }), createdAt: now, updatedAt: now });
+    await docRef.set({ companyId, accountId, documentNo: String(body.documentNo ?? "").trim(), type: String(body.type ?? ""), payTerm: String(body.payTerm ?? ""), settlementId: String(body.settlementId ?? ""), settlement: String(body.settlement ?? ""), client: body.client && typeof body.client === "object" ? body.client : {}, company: body.company && typeof body.company === "object" ? body.company : {}, companyLocation: body.companyLocation && typeof body.companyLocation === "object" ? body.companyLocation : {}, issueDate: String(body.issueDate ?? ""), currency, status: String(body.status ?? "draft"), totalPrice: Number(body.totalPrice) || 0, totalTax: Number(body.totalTax) || 0, totalAmount: Number(body.totalAmount) || 0, comment: String(body.comment ?? ""), zipUrl: String(body.zipUrl ?? ""), cdrUrl: String(body.cdrUrl ?? ""), pdfUrl: String(body.pdfUrl ?? ""), operationTypeCode: String(body.operationTypeCode ?? "0101"), ...(body.dueDate != null && { dueDate: body.dueDate }), ...(body.saleOrderId && { saleOrderId: String(body.saleOrderId) }), ...(body.saleOrderCode && { saleOrderCode: String(body.saleOrderCode) }), createdAt: now, updatedAt: now });
     // Fire-and-forget: update tenant stats counter
     adjustCount(db, { accountId, companyId, metricKey: "invoices-count", delta: 1 }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
@@ -4741,6 +4853,12 @@ webRouter.post("/billing/invoices", async (req, res) => {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/billing/invoices POST] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
+    if (msg === "company_currency_config_missing") {
+      return res.status(412).json({ error: msg });
+    }
+    if (msg === "currency_not_allowed") {
+      return res.status(422).json({ error: msg });
+    }
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }
 });
@@ -4756,8 +4874,11 @@ webRouter.put("/billing/invoices/:id", async (req, res) => {
     if (String(currentData.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updatedAt: new Date() };
-    for (const key of ["documentNo","type","payTerm","settlementId","settlement","client","company","companyLocation","issueDate","currency","status","totalPrice","totalTax","totalAmount","comment","zipUrl","cdrUrl","pdfUrl","operationTypeCode","dueDate","issueBlockReason"] as const) {
+    for (const key of ["documentNo","type","payTerm","settlementId","settlement","client","company","companyLocation","issueDate","currency","status","totalPrice","totalTax","totalAmount","comment","zipUrl","cdrUrl","pdfUrl","operationTypeCode","dueDate","issueBlockReason","saleOrderId","saleOrderCode"] as const) {
       if (body[key] !== undefined) patch[key] = body[key];
+    }
+    if (body.currency !== undefined) {
+      patch.currency = await normalizeCurrencyOrThrow(db, companyId, body.currency);
     }
     await db.collection("invoices").doc(id).update(patch);
     return res.status(200).json({ ok: true });
@@ -4765,6 +4886,12 @@ webRouter.put("/billing/invoices/:id", async (req, res) => {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/billing/invoices/:id PUT] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
+    if (msg === "company_currency_config_missing") {
+      return res.status(412).json({ error: msg });
+    }
+    if (msg === "currency_not_allowed") {
+      return res.status(422).json({ error: msg });
+    }
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }
 });
@@ -4839,13 +4966,20 @@ webRouter.post("/billing/invoices/:invoiceId/items", async (req, res) => {
     if (String(invSnap.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     const now = new Date();
     const body = req.body ?? {};
+    const currency = await normalizeCurrencyOrThrow(db, companyId, body.currency);
     const docRef = db.collection("invoices").doc(invoiceId).collection("invoiceItems").doc();
-    await docRef.set({ companyId, accountId, itemId: String(body.itemId ?? ""), itemName: String(body.itemName ?? ""), description: String(body.description ?? ""), itemType: String(body.itemType ?? ""), measure: body.measure && typeof body.measure === "object" ? body.measure : {}, taxType: body.taxType && typeof body.taxType === "object" ? body.taxType : {}, quantity: Number(body.quantity) || 0, unitPrice: Number(body.unitPrice) || 0, price: Number(body.price) || 0, tax: Number(body.tax) || 0, amount: Number(body.amount) || 0, currency: String(body.currency ?? "PEN"), taxAffectationCode: String(body.taxAffectationCode ?? "10"), taxSchemeCode: String(body.taxSchemeCode ?? "1000"), taxSchemeName: String(body.taxSchemeName ?? "IGV"), taxTypeCode: String(body.taxTypeCode ?? "VAT"), unitCode: String(body.unitCode ?? "NIU"), ...(body.itemCode != null && { itemCode: body.itemCode }), ...(body.iscAmount != null && { iscAmount: Number(body.iscAmount) }), ...(body.icbperUnitAmount != null && { icbperUnitAmount: Number(body.icbperUnitAmount) }), createdAt: now, updatedAt: now });
+    await docRef.set({ companyId, accountId, itemId: String(body.itemId ?? ""), itemName: String(body.itemName ?? ""), description: String(body.description ?? ""), itemType: String(body.itemType ?? ""), measure: body.measure && typeof body.measure === "object" ? body.measure : {}, taxType: body.taxType && typeof body.taxType === "object" ? body.taxType : {}, quantity: Number(body.quantity) || 0, unitPrice: Number(body.unitPrice) || 0, price: Number(body.price) || 0, tax: Number(body.tax) || 0, amount: Number(body.amount) || 0, currency, taxAffectationCode: String(body.taxAffectationCode ?? "10"), taxSchemeCode: String(body.taxSchemeCode ?? "1000"), taxSchemeName: String(body.taxSchemeName ?? "IGV"), taxTypeCode: String(body.taxTypeCode ?? "VAT"), unitCode: String(body.unitCode ?? "NIU"), ...(body.itemCode != null && { itemCode: body.itemCode }), ...(body.iscAmount != null && { iscAmount: Number(body.iscAmount) }), ...(body.icbperUnitAmount != null && { icbperUnitAmount: Number(body.icbperUnitAmount) }), createdAt: now, updatedAt: now });
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/billing/invoices/:id/items POST] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
+    if (msg === "company_currency_config_missing") {
+      return res.status(412).json({ error: msg });
+    }
+    if (msg === "currency_not_allowed") {
+      return res.status(422).json({ error: msg });
+    }
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }
 });
@@ -4863,12 +4997,21 @@ webRouter.put("/billing/invoices/:invoiceId/items/:itemId", async (req, res) => 
     for (const key of ["itemId","itemName","description","itemType","measure","taxType","quantity","unitPrice","price","tax","amount","currency","taxAffectationCode","taxSchemeCode","taxSchemeName","taxTypeCode","unitCode","itemCode","iscAmount","icbperUnitAmount"] as const) {
       if (body[key] !== undefined) patch[key] = body[key];
     }
+    if (body.currency !== undefined) {
+      patch.currency = await normalizeCurrencyOrThrow(db, companyId, body.currency);
+    }
     await db.collection("invoices").doc(invoiceId).collection("invoiceItems").doc(itemId).update(patch);
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/billing/invoices/:id/items/:id PUT] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
+    if (msg === "company_currency_config_missing") {
+      return res.status(412).json({ error: msg });
+    }
+    if (msg === "currency_not_allowed") {
+      return res.status(422).json({ error: msg });
+    }
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }
 });
@@ -5192,10 +5335,12 @@ webRouter.get("/billing/sunat-monitor/jobs", async (req, res) => {
 
 function toReportDefinitionRecord(doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> {
   const d = doc.data() ?? {};
+  const validSources = ["trips", "purchase-orders", "sale-orders", "quotations", "inventory-movements", "stock-valuation"];
+  const rawSource = String(d.source ?? "trips").trim();
   return {
     id: doc.id,
     name: normalizeText(d.name),
-    source: d.source === "trips" ? "trips" : "trips",
+    source: validSources.includes(rawSource) ? rawSource : "trips",
     rowGranularity: d.rowGranularity ?? "perTrip",
     layoutKind: d.layoutKind ?? "pivot",
     templateId: d.templateId ?? "dd-despacho-domicilio",
@@ -5215,6 +5360,7 @@ function toReportDefinitionRecord(doc: FirebaseFirestore.DocumentSnapshot): Reco
     notifyEmails: Array.isArray(d.notifyEmails) ? d.notifyEmails.map((x: unknown) => String(x ?? "").trim()).filter(Boolean) : undefined,
     notifyEmailSubjectTemplate: normalizeText(d.notifyEmailSubjectTemplate),
     notifyEmailBodyHtml: normalizeText(d.notifyEmailBodyHtml),
+    permissionModule: normalizeText(d.permissionModule),
     createAt: d.createAt ?? d.createdAt,
     createBy: normalizeText(d.createBy),
     updateAt: d.updateAt,
@@ -5291,10 +5437,12 @@ webRouter.post("/reports/definitions", async (req, res) => {
     if (!body.name?.trim()) return res.status(400).json({ error: "name_required" });
 
     const docRef = db.collection("report-definitions").doc();
+    const validSources = ["trips", "purchase-orders", "sale-orders", "quotations", "inventory-movements", "stock-valuation"];
+    const rawSource = String(body.source ?? "trips").trim();
     const doc = {
       companyId, accountId,
       name: String(body.name ?? "").trim(),
-      source: body.source ?? "trips",
+      source: validSources.includes(rawSource) ? rawSource : "trips",
       rowGranularity: body.rowGranularity ?? "perTrip",
       layoutKind: body.layoutKind ?? "pivot",
       templateId: body.templateId ?? "dd-despacho-domicilio",
@@ -5311,6 +5459,7 @@ webRouter.post("/reports/definitions", async (req, res) => {
       ...(Array.isArray(body.notifyEmails) && body.notifyEmails.length ? { notifyEmails: body.notifyEmails } : {}),
       ...(body.notifyEmailSubjectTemplate ? { notifyEmailSubjectTemplate: body.notifyEmailSubjectTemplate } : {}),
       ...(body.notifyEmailBodyHtml ? { notifyEmailBodyHtml: body.notifyEmailBodyHtml } : {}),
+      ...(body.permissionModule ? { permissionModule: String(body.permissionModule).trim() } : {}),
       createAt: now,
       createBy: String((req as any)?.auth?.uid ?? "").trim() || "web",
       updateAt: now,
@@ -5533,6 +5682,215 @@ webRouter.post("/reports/preview", async (req, res) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/reports/preview POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+// ===== Report Generation Endpoints for Purchasing, Sales & Inventory =====
+
+/**
+ * POST /reports/generate/purchase-orders
+ * Generates a purchase orders report for a given period with optional filters.
+ */
+webRouter.post("/reports/generate/purchase-orders", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const body = req.body ?? {};
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+
+    const dateFrom = String(body.dateFrom ?? "").trim();
+    const dateTo = String(body.dateTo ?? "").trim();
+    if (!dateFrom || !dateTo) return res.status(400).json({ error: "dateFrom_and_dateTo_required" });
+
+    const params: Record<string, unknown> = { dateFrom, dateTo };
+    if (body.status) params.status = String(body.status).trim();
+    if (body.supplierId) params.supplierId = String(body.supplierId).trim();
+    if (body.locationId) params.locationId = String(body.locationId).trim();
+
+    const docRef = db.collection("report-runs").doc();
+    await docRef.set({
+      reportDefinitionId: body.reportDefinitionId || null,
+      companyId,
+      accountId,
+      source: "purchase-orders",
+      params,
+      status: "pending",
+      trigger: "manual",
+      outputFormat: String(body.outputFormat ?? "xlsx").toLowerCase() === "pdf" ? "pdf" : "xlsx",
+      requestedBy: uid,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ ok: true, id: docRef.id, status: "pending" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/reports/generate/purchase-orders POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+/**
+ * POST /reports/generate/sale-orders
+ * Generates a sale orders report for a given period with optional filters.
+ */
+webRouter.post("/reports/generate/sale-orders", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const body = req.body ?? {};
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+
+    const dateFrom = String(body.dateFrom ?? "").trim();
+    const dateTo = String(body.dateTo ?? "").trim();
+    if (!dateFrom || !dateTo) return res.status(400).json({ error: "dateFrom_and_dateTo_required" });
+
+    const params: Record<string, unknown> = { dateFrom, dateTo };
+    if (body.status) params.status = String(body.status).trim();
+    if (body.clientId) params.clientId = String(body.clientId).trim();
+    if (body.locationId) params.locationId = String(body.locationId).trim();
+
+    const docRef = db.collection("report-runs").doc();
+    await docRef.set({
+      reportDefinitionId: body.reportDefinitionId || null,
+      companyId,
+      accountId,
+      source: "sale-orders",
+      params,
+      status: "pending",
+      trigger: "manual",
+      outputFormat: String(body.outputFormat ?? "xlsx").toLowerCase() === "pdf" ? "pdf" : "xlsx",
+      requestedBy: uid,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ ok: true, id: docRef.id, status: "pending" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/reports/generate/sale-orders POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+/**
+ * POST /reports/generate/quotations
+ * Generates a quotations report for a given period with optional filters.
+ */
+webRouter.post("/reports/generate/quotations", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const body = req.body ?? {};
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+
+    const dateFrom = String(body.dateFrom ?? "").trim();
+    const dateTo = String(body.dateTo ?? "").trim();
+    if (!dateFrom || !dateTo) return res.status(400).json({ error: "dateFrom_and_dateTo_required" });
+
+    const params: Record<string, unknown> = { dateFrom, dateTo };
+    if (body.status) params.status = String(body.status).trim();
+    if (body.clientId) params.clientId = String(body.clientId).trim();
+    if (body.locationId) params.locationId = String(body.locationId).trim();
+
+    const docRef = db.collection("report-runs").doc();
+    await docRef.set({
+      reportDefinitionId: body.reportDefinitionId || null,
+      companyId,
+      accountId,
+      source: "quotations",
+      params,
+      status: "pending",
+      trigger: "manual",
+      outputFormat: String(body.outputFormat ?? "xlsx").toLowerCase() === "pdf" ? "pdf" : "xlsx",
+      requestedBy: uid,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ ok: true, id: docRef.id, status: "pending" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/reports/generate/quotations POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+/**
+ * POST /reports/generate/inventory-movements
+ * Generates an inventory movements report for a given period with optional filters.
+ */
+webRouter.post("/reports/generate/inventory-movements", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const body = req.body ?? {};
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+
+    const dateFrom = String(body.dateFrom ?? "").trim();
+    const dateTo = String(body.dateTo ?? "").trim();
+    if (!dateFrom || !dateTo) return res.status(400).json({ error: "dateFrom_and_dateTo_required" });
+
+    const params: Record<string, unknown> = { dateFrom, dateTo };
+    if (body.type) params.type = String(body.type).trim();
+    if (body.warehouseId) params.warehouseId = String(body.warehouseId).trim();
+    if (body.productId) params.productId = String(body.productId).trim();
+    if (body.locationId) params.locationId = String(body.locationId).trim();
+
+    const docRef = db.collection("report-runs").doc();
+    await docRef.set({
+      reportDefinitionId: body.reportDefinitionId || null,
+      companyId,
+      accountId,
+      source: "inventory-movements",
+      params,
+      status: "pending",
+      trigger: "manual",
+      outputFormat: String(body.outputFormat ?? "xlsx").toLowerCase() === "pdf" ? "pdf" : "xlsx",
+      requestedBy: uid,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ ok: true, id: docRef.id, status: "pending" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/reports/generate/inventory-movements POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
+  }
+});
+
+/**
+ * POST /reports/generate/stock-valuation
+ * Generates a stock valuation report with optional filters.
+ */
+webRouter.post("/reports/generate/stock-valuation", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const body = req.body ?? {};
+    const uid = String((req as any)?.auth?.uid ?? "").trim();
+
+    const params: Record<string, unknown> = {};
+    if (body.warehouseId) params.warehouseId = String(body.warehouseId).trim();
+    if (body.productId) params.productId = String(body.productId).trim();
+    if (body.locationId) params.locationId = String(body.locationId).trim();
+
+    const docRef = db.collection("report-runs").doc();
+    await docRef.set({
+      reportDefinitionId: body.reportDefinitionId || null,
+      companyId,
+      accountId,
+      source: "stock-valuation",
+      params,
+      status: "pending",
+      trigger: "manual",
+      outputFormat: String(body.outputFormat ?? "xlsx").toLowerCase() === "pdf" ? "pdf" : "xlsx",
+      requestedBy: uid,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ ok: true, id: docRef.id, status: "pending" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/reports/generate/stock-valuation POST] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(msg === "forbidden" ? 403 : 500).json({ error: msg });
   }

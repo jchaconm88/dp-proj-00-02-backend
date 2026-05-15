@@ -1,10 +1,12 @@
 import { Router } from "express";
 import accountsRouter from "./accounts.js";
 import companiesRouter from "./companies.js";
+import companyLocationsRouter from "./company-locations.js";
 import adminAccessRouter from "./admin-access.js";
 import companyUsersRouter from "./company-users.js";
 import modulesRouter from "./modules.js";
 import saasRouter from "./saas.js";
+import ubigeosRouter from "./ubigeos.js";
 import webRolesRouter from "./web-roles.js";
 import webUsersRouter from "./web-users.js";
 
@@ -12,10 +14,12 @@ const router = Router();
 
 router.use("/accounts", accountsRouter);
 router.use("/companies", companiesRouter);
+router.use("/", companyLocationsRouter);
 router.use("/", adminAccessRouter);
 router.use("/", companyUsersRouter);
 router.use("/", modulesRouter);
 router.use("/", saasRouter);
+router.use("/", ubigeosRouter);
 router.use("/", webRolesRouter);
 router.use("/web-users", webUsersRouter);
 
