@@ -16,16 +16,30 @@ function transformSnapshotToResponse(
   overrides: Array<{ definitionId: string; definitionType: string; visible: boolean; order: number }> | null
 ): DashboardSnapshotResponse {
   // Filter cards
-  let filteredCards = Object.values(doc.cards ?? {});
+  let filteredCards = Object.values(doc.cards ?? {}) as SnapshotCardEntry[];
 
   if (effectivePermissions.length > 0) {
-    filteredCards = filterByPermission(filteredCards, effectivePermissions) as SnapshotCardEntry[];
+    filteredCards = filterByPermission(filteredCards, effectivePermissions);
   }
-  filteredCards = filterByTarget(filteredCards, appTarget) as SnapshotCardEntry[];
+  filteredCards = filterByTarget(filteredCards, appTarget);
 
   // Apply overrides
   if (overrides && overrides.length > 0) {
-    filteredCards = mergeWithOverrides(filteredCards, overrides) as SnapshotCardEntry[];
+    const withVisibility = filteredCards.map((card) => ({
+      ...card,
+      id: card.cardKey,
+      visible: true,
+    }));
+    const merged = mergeWithOverrides(
+      withVisibility,
+      overrides.filter(
+        (ov): ov is { definitionId: string; definitionType: "card" | "chart"; visible: boolean; order: number } =>
+          ov.definitionType === "card" || ov.definitionType === "chart"
+      )
+    );
+    filteredCards = merged
+      .filter((card) => card.visible)
+      .map(({ visible: _visible, ...card }) => card);
   }
 
   // Sort by order

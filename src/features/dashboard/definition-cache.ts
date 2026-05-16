@@ -16,13 +16,11 @@ let cardsCache: CacheEntry<CardDefinition> | null = null;
 let chartsCache: CacheEntry<ChartDefinition> | null = null;
 
 // ─── Generic cache loader with coalescing ─────────────────────────────────────
-
-async function loadWithCache<T>(
-  cache: CacheEntry<T> | null,
-  loader: (db: FirebaseFirestore.Firestore) => Promise<Array<{ data: T }>>,
+async function loadMetricsWithCache(
   db: FirebaseFirestore.Firestore
-): Promise<T[]> {
+): Promise<MetricDefinition[]> {
   const now = Date.now();
+  const cache = metricsCache;
 
   if (cache && now - cache.loadedAt < CACHE_TTL) {
     return cache.data;
@@ -32,7 +30,7 @@ async function loadWithCache<T>(
     return cache.inflight;
   }
 
-  const promise = loader(db).then((merged) => merged.map((m) => m.data));
+  const promise = listMergedMetrics(db).then((merged) => merged.map((m) => m.data));
 
   if (cache) {
     cache.inflight = promise;
@@ -40,10 +38,74 @@ async function loadWithCache<T>(
 
   try {
     const data = await promise;
-    const entry: CacheEntry<T> = { data, loadedAt: Date.now(), inflight: null };
-    if (cache === metricsCache) metricsCache = entry;
-    else if (cache === cardsCache) cardsCache = entry;
-    else if (cache === chartsCache) chartsCache = entry;
+    const entry: CacheEntry<MetricDefinition> = { data, loadedAt: Date.now(), inflight: null };
+    metricsCache = entry;
+    return data;
+  } catch (error) {
+    if (cache) {
+      cache.inflight = null;
+    }
+    throw error;
+  }
+}
+
+async function loadCardsWithCache(
+  db: FirebaseFirestore.Firestore
+): Promise<CardDefinition[]> {
+  const now = Date.now();
+  const cache = cardsCache;
+
+  if (cache && now - cache.loadedAt < CACHE_TTL) {
+    return cache.data;
+  }
+
+  if (cache?.inflight) {
+    return cache.inflight;
+  }
+
+  const promise = listMergedCards(db).then((merged) => merged.map((m) => m.data));
+
+  if (cache) {
+    cache.inflight = promise;
+  }
+
+  try {
+    const data = await promise;
+    const entry: CacheEntry<CardDefinition> = { data, loadedAt: Date.now(), inflight: null };
+    cardsCache = entry;
+    return data;
+  } catch (error) {
+    if (cache) {
+      cache.inflight = null;
+    }
+    throw error;
+  }
+}
+
+async function loadChartsWithCache(
+  db: FirebaseFirestore.Firestore
+): Promise<ChartDefinition[]> {
+  const now = Date.now();
+  const cache = chartsCache;
+
+  if (cache && now - cache.loadedAt < CACHE_TTL) {
+    return cache.data;
+  }
+
+  if (cache?.inflight) {
+    return cache.inflight;
+  }
+
+  const promise = listMergedCharts(db).then((merged) => merged.map((m) => m.data));
+
+  if (cache) {
+    cache.inflight = promise;
+  }
+
+  try {
+    const data = await promise;
+    const entry: CacheEntry<ChartDefinition> = { data, loadedAt: Date.now(), inflight: null };
+    chartsCache = entry;
     return data;
   } catch (error) {
     if (cache) {
@@ -58,19 +120,19 @@ async function loadWithCache<T>(
 export async function getMetricsFromCache(
   db: FirebaseFirestore.Firestore
 ): Promise<MetricDefinition[]> {
-  return loadWithCache(metricsCache, (d) => listMergedMetrics(d as any), db);
+  return loadMetricsWithCache(db);
 }
 
 export async function getCardsFromCache(
   db: FirebaseFirestore.Firestore
 ): Promise<CardDefinition[]> {
-  return loadWithCache(cardsCache, (d) => listMergedCards(d as any), db);
+  return loadCardsWithCache(db);
 }
 
 export async function getChartsFromCache(
   db: FirebaseFirestore.Firestore
 ): Promise<ChartDefinition[]> {
-  return loadWithCache(chartsCache, (d) => listMergedCharts(d as any), db);
+  return loadChartsWithCache(db);
 }
 
 /**
