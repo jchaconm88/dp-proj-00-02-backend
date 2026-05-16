@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getAdminFirestore } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
 
 const ACCOUNT_STATUS_ALLOWED = new Set(["active", "inactive"]);
 
@@ -60,6 +61,13 @@ router.post("/", async (req, res) => {
       createdAt: now,
       updatedAt: now,
     });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "account",
+      action: "create",
+      recordId: accountId,
+      fields: { name: parsedName, status: parsedStatus },
+    }).catch(() => {});
     res.status(201).json({ ok: true, id: accountId });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -89,6 +97,13 @@ router.put("/:id", async (req, res) => {
       ...patch,
       updatedAt: new Date(),
     });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "account",
+      action: "update",
+      recordId: id,
+      fields: { name: String(patch.name ?? ""), status: String(patch.status ?? "") },
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -104,6 +119,13 @@ router.delete("/:id", async (req, res) => {
     if (String(id) !== accountId) return res.status(403).json({ error: "forbidden" });
     const db = getAdminFirestore();
     await db.collection("accounts").doc(id).delete();
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "account",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

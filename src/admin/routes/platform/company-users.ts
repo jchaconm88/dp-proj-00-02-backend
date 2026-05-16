@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { getWebFirestore } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
+import { getAdminFirestore } from "../../../lib/firebase-admin.js";
 
 function requireAccountId(req: any): string {
   const accountId = String(req?.admin?.accountId ?? "").trim();
@@ -83,6 +85,18 @@ router.post("/company-users", async (req, res) => {
       updateBy: "admin",
     });
     res.status(201).json({ ok: true, id });
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company-user",
+      action: "create",
+      recordId: id,
+      fields: {
+        displayName: userDisplayName,
+        email: userEmail,
+        userId,
+        status,
+      },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/company-users POST] failed:", msg);
@@ -114,6 +128,18 @@ router.put("/company-users/:id", async (req, res) => {
     }
     await db.collection("company-users").doc(id).update(patch);
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company-user",
+      action: "update",
+      recordId: id,
+      fields: {
+        displayName: String(patch.userDisplayName ?? snap.data()?.userDisplayName ?? ""),
+        email: String(patch.userEmail ?? snap.data()?.userEmail ?? ""),
+        userId: String(patch.userId ?? snap.data()?.userId ?? ""),
+        status: String(patch.status ?? snap.data()?.status ?? ""),
+      },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/company-users PUT] failed:", msg);
@@ -133,6 +159,13 @@ router.delete("/company-users/:id", async (req, res) => {
     }
     await db.collection("company-users").doc(id).delete();
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company-user",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/company-users DELETE] failed:", msg);

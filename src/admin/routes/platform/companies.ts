@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getWebFirestore } from "../../../lib/firebase-admin.js";
+import { getAdminFirestore, getWebFirestore } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
 import {
   getCountryByCode,
   filterAllowedCurrenciesByCountry,
@@ -156,6 +157,17 @@ router.post("/", async (req, res) => {
       ...(taxId !== undefined && taxId !== null && String(taxId).trim() !== "" ? { taxId: String(taxId).trim() } : {}),
     };
     res.status(201).json(created);
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company",
+      action: "create",
+      recordId: docRef.id,
+      fields: {
+        name: String(name).trim(),
+        ruc: String(taxId ?? "").trim(),
+        status: String(status),
+      },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/companies POST] failed:", msg);
@@ -196,6 +208,17 @@ router.put("/:id", async (req, res) => {
       ...fields,
       updatedAt: new Date(),
     });
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company",
+      action: "update",
+      recordId: id,
+      fields: {
+        name: String(fields.name ?? existing.data()?.name ?? ""),
+        ruc: String(fields.taxId ?? existing.data()?.taxId ?? ""),
+        status: String(fields.status ?? existing.data()?.status ?? ""),
+      },
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -217,6 +240,13 @@ router.delete("/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("companies").doc(id).delete();
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "company",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

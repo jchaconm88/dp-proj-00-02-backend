@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getAdminFirestore } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
 
 const SUBSCRIPTION_STATUS_ALLOWED = new Set(["active", "inactive", "suspended", "cancelled"]);
 const BILLING_CYCLE_ALLOWED = new Set(["monthly", "annual"]);
@@ -86,6 +87,13 @@ router.post("/plans", async (req, res) => {
       updatedAt: now,
     });
     res.status(201).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "plan",
+      action: "create",
+      recordId: String(id).trim(),
+      fields: { name: String(name).trim() },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/plans POST] failed:", msg);
@@ -108,6 +116,13 @@ router.put("/plans/:id", async (req, res) => {
       updatedAt: new Date(),
     });
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "plan",
+      action: "update",
+      recordId: id,
+      fields: { name: String(fields.name ?? existing.data()?.name ?? "") },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/plans PUT] failed:", msg);
@@ -126,6 +141,13 @@ router.delete("/plans/:id", async (req, res) => {
     }
     await db.collection("saas-plans").doc(id).delete();
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "plan",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/plans DELETE] failed:", msg);
@@ -190,6 +212,13 @@ router.post("/subscriptions", async (req, res) => {
       updatedAt: now,
     });
     res.status(201).json({ ok: true, id: parsedId });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "subscription",
+      action: "create",
+      recordId: parsedId,
+      fields: { planId: parsedPlanId, status: asSubscriptionStatus(status) },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/subscriptions POST] failed:", msg);
@@ -235,6 +264,16 @@ router.put("/subscriptions/:id", async (req, res) => {
       updatedAt: new Date(),
     });
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "subscription",
+      action: "update",
+      recordId: id,
+      fields: {
+        planId: String(patch.planId ?? existing.data()?.planId ?? ""),
+        status: String(patch.status ?? existing.data()?.status ?? ""),
+      },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/subscriptions PUT] failed:", msg);
@@ -253,6 +292,13 @@ router.delete("/subscriptions/:id", async (req, res) => {
     }
     await db.collection("subscriptions").doc(id).delete();
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "subscription",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/subscriptions DELETE] failed:", msg);

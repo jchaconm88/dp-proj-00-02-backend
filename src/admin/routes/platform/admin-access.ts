@@ -8,6 +8,7 @@ import {
   updateAdminCustomRole,
 } from "../../../lib/merged-roles.service.js";
 import { getAdminFirestore } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
 
 function requireAccountId(req: any): string {
   const accountId = String(req?.admin?.accountId ?? "").trim();
@@ -59,6 +60,13 @@ router.post("/roles", async (req, res) => {
     const db = getAdminFirestore();
     const { id } = await createAdminCustomRole(db, accountId, req.body ?? {});
     res.status(201).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "role",
+      action: "create",
+      recordId: id,
+      fields: { name: String(req.body?.name ?? ""), description: String(req.body?.description ?? "") },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/roles POST] failed:", msg);
@@ -73,6 +81,13 @@ router.put("/roles/:id", async (req, res) => {
     const { id } = req.params;
     await updateAdminCustomRole(db, accountId, id, req.body ?? {});
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "role",
+      action: "update",
+      recordId: id,
+      fields: { name: String(req.body?.name ?? ""), description: String(req.body?.description ?? "") },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/roles PUT] failed:", msg);
@@ -87,6 +102,13 @@ router.delete("/roles/:id", async (req, res) => {
     const { id } = req.params;
     await deleteAdminCustomRole(db, accountId, id);
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "role",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/roles DELETE] failed:", msg);
@@ -166,6 +188,13 @@ router.post("/users", async (req, res) => {
       { merge: true }
     );
     res.status(201).json({ ok: true, id: String(id).trim() });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "admin-user",
+      action: "create",
+      recordId: String(id).trim(),
+      fields: { displayName: String(displayName).trim(), email: String(email).trim(), status: String(status).trim() },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/users POST] failed:", msg);
@@ -191,6 +220,13 @@ router.put("/users/:id", async (req, res) => {
       updatedAt: new Date(),
     });
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "admin-user",
+      action: "update",
+      recordId: id,
+      fields: { displayName: String(fields.displayName ?? existing.data()?.displayName ?? ""), email: String(fields.email ?? existing.data()?.email ?? ""), status: String(fields.status ?? existing.data()?.status ?? "") },
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/users PUT] failed:", msg);
@@ -212,6 +248,13 @@ router.delete("/users/:id", async (req, res) => {
     }
     await db.collection("users").doc(id).delete();
     res.status(200).json({ ok: true, id });
+    updateAdminEntitySearchIndex(db, {
+      accountId,
+      entityId: "admin-user",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[admin/platform/users DELETE] failed:", msg);

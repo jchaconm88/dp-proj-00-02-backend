@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getWebFirestore, getWebAuth } from "../../../lib/firebase-admin.js";
+import { getAdminFirestore, getWebFirestore, getWebAuth } from "../../../lib/firebase-admin.js";
+import { updateAdminEntitySearchIndex } from "../../../features/search/entity-search-index-admin.service.js";
 
 function requireAccountId(req: any): string {
   const accountId = String(req?.admin?.accountId ?? "").trim();
@@ -134,6 +135,17 @@ router.post("/", async (req, res) => {
     };
     
     await wDb.collection("users").doc(authUid).set(payload);
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "web-user",
+      action: "create",
+      recordId: authUid,
+      fields: {
+        displayName: String(displayName).trim(),
+        email: normalizedEmail,
+        status: String(status).trim() === "inactive" ? "inactive" : "active",
+      },
+    }).catch(() => {});
     return res.status(201).json({ ok: true, id: authUid, authUid, generatedPassword: userPassword });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -165,6 +177,17 @@ router.put("/:id", async (req, res) => {
       ...fields,
       updatedAt: new Date(),
     });
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "web-user",
+      action: "update",
+      recordId: id,
+      fields: {
+        displayName: String((fields as any).displayName ?? existing.data()?.displayName ?? ""),
+        email: String((fields as any).email ?? existing.data()?.email ?? ""),
+        status: String((fields as any).status ?? existing.data()?.status ?? ""),
+      },
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -195,6 +218,13 @@ router.delete("/:id", async (req, res) => {
     }
     
     await wDb.collection("users").doc(id).delete();
+    updateAdminEntitySearchIndex(getAdminFirestore(), {
+      accountId,
+      entityId: "web-user",
+      action: "delete",
+      recordId: id,
+      fields: {},
+    }).catch(() => {});
     res.status(200).json({ ok: true, id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
