@@ -4,15 +4,20 @@ type Timestamp = firestore.Timestamp;
 
 // ─── Metric Definitions (metric-definitions collection) ─────────────────────
 
+export type DeltaType = "count" | "sum" | "custom";
+export type ValueFormat = "number" | "currency" | "percentage" | "bytes";
+
 export interface MetricDefinition {
   id: string;
   metricKey: string;
   label: string;
   type: "entityCount" | "sum" | "ratio" | "custom";
   measureType: "counterMonthly" | "gaugeCurrent";
-  valueFormat: "number" | "currency" | "percentage" | "bytes";
+  valueFormat: ValueFormat;
   source: {
     collectionName: string;
+    fieldName?: string;
+    deltaType?: DeltaType;
   };
   numeratorMetricKey?: string;
   denominatorMetricKey?: string;
@@ -144,6 +149,79 @@ export interface ChartDataPoint {
   period: string;
   value: number;
   createdAt: Timestamp;
+}
+
+// ─── Snapshot Document (nuevo formato unificado) ──────────────────────────────
+
+export interface SnapshotDocument {
+  accountId: string;
+  companyId: string | null;
+  period: string;
+  counters: Record<string, number>;
+  cards: Record<string, SnapshotCardEntry>;
+  charts: Record<string, SnapshotChartEntry>;
+  history: Record<string, Record<string, number>>;
+  activityItems: ActivityItem[];
+  metadata: {
+    generatedAt: Timestamp;
+    configSource: "incremental" | "compose";
+  };
+  updatedAt: Timestamp;
+}
+
+export interface SnapshotCardEntry {
+  cardKey: string;
+  metricKey: string;
+  title: string;
+  subtitle: string | null;
+  icon: string;
+  accentClass: string;
+  value: string;
+  rawValue: number;
+  progressPct: number | null;
+  progressLabel: string | null;
+  href: string | null;
+  permissionModule: string | null;
+  target: "admin" | "web" | "both";
+  order: number;
+}
+
+export interface SnapshotChartEntry {
+  chartKey: string;
+  title: string;
+  chartType: "bar" | "line" | "pie" | "doughnut";
+  permissionModule: string | null;
+  target: "admin" | "web" | "both";
+  labels: string[];
+  datasets: Array<{
+    metricKey: string;
+    label: string;
+    data: number[];
+  }>;
+}
+
+// ─── Dashboard Snapshot Response (API output) ─────────────────────────────────
+
+export interface DashboardSnapshotResponse {
+  accountId: string;
+  companyId: string | null;
+  period: string;
+  cards: SnapshotCardEntry[];
+  charts: SnapshotChartEntry[];
+  counters: Record<string, number>;
+  activityItems: ActivityItem[];
+  metadata: {
+    generatedAt: Timestamp;
+    configSource: string;
+  } | null;
+}
+
+// ─── Cache Entry (definition-cache.ts) ────────────────────────────────────────
+
+export interface CacheEntry<T> {
+  data: T[];
+  loadedAt: number;
+  inflight: Promise<T[]> | null;
 }
 
 // ─── Company Dashboard Overrides (company-dashboard-overrides collection) ────

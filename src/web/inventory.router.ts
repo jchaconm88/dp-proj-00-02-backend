@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { FieldValue } from "firebase-admin/firestore";
 import { getWebFirestore } from "../lib/firebase-admin.js";
-import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+import { trackEntityChange } from "../features/dashboard/snapshot-incremental.service.js";
 import { getCountryByCode, filterAllowedCurrenciesByCountry } from "../data/countries.js";
 import { parseCurrencyCode, type CurrencyCode } from "../data/currencies.js";
 import {
@@ -320,8 +320,8 @@ router.post("/movements", async (req, res) => {
       }
     });
 
-    // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "inventory-movements-count", delta: 1 }).catch(() => {});
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "inventory-movements", action: "create" }).catch(() => {});
 
     return res.status(201).json({ id: movementRef.id });
   } catch (e) {

@@ -22,7 +22,7 @@ import dashboardSnapshotRouter from "../features/dashboard/dashboard-snapshot.ro
 import purchasingRouter from "./purchasing.router.js";
 import salesRouter from "./sales.router.js";
 import inventoryRouter from "./inventory.router.js";
-import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
 import {
   getDocumentTypesByCountryAndType,
   parseDocumentTypeCategory,
@@ -47,12 +47,11 @@ import {
   parseUbigeoCountry,
 } from "../data/ubigeos.js";
 
-// NOTE: adjustCount is integrated for tracked collections that have create/delete endpoints:
-// trips, settlements, invoices, clients, employees, vehicles, drivers, orders, suppliers, purchase-orders, quotations, sale-orders.
+// NOTE: trackEntityChange is integrated for tracked collections that have create/delete endpoints.
 // The following tracked collections do NOT have create/delete endpoints yet:
-// - report-runs: integrate adjustCount(db, { accountId, companyId, metricKey: "report-runs", delta: 1 }) when endpoint is created
-// - email-log: integrate adjustCount(db, { accountId, companyId, metricKey: "emails-sent", delta: 1 }) when endpoint is created
-// - storage-usage: integrate adjustCount(db, { accountId, companyId, metricKey: "storage-bytes-used", delta: <bytes> }) when endpoint is created
+// - report-runs: integrate trackEntityChange when endpoint is created
+// - email-log: integrate trackEntityChange when endpoint is created
+// - storage-usage: integrate trackEntityChange when endpoint is created
 
 export const webRouter = Router();
 
@@ -764,7 +763,7 @@ webRouter.post("/master/clients", async (req, res) => {
     const docRef = db.collection("clients").doc();
     await docRef.set(doc);
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "clients-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "clients", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -861,7 +860,7 @@ webRouter.delete("/master/clients/:id", async (req, res) => {
     }
     await db.collection("clients").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "clients-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "clients", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1344,7 +1343,7 @@ webRouter.post("/human-resource/employees", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "employees-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "employees", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1416,7 +1415,7 @@ webRouter.delete("/human-resource/employees/:id", async (req, res) => {
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("employees").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "employees-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "employees", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1756,7 +1755,7 @@ webRouter.post("/logistic/orders", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "orders-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "orders", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1809,7 +1808,7 @@ webRouter.delete("/logistic/orders/:id", async (req, res) => {
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("orders").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "orders-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "orders", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -2458,7 +2457,7 @@ webRouter.post("/transport/vehicles", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "vehicles-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "vehicles", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -2507,7 +2506,7 @@ webRouter.delete("/transport/vehicles/:id", async (req, res) => {
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("vehicles").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "vehicles-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "vehicles", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3146,7 +3145,7 @@ webRouter.post("/transport/drivers", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "drivers-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "drivers", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3197,7 +3196,7 @@ webRouter.delete("/transport/drivers/:id", async (req, res) => {
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("drivers").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "drivers-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "drivers", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3553,7 +3552,7 @@ webRouter.post("/transport/trips", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "trips-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "trips", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3600,7 +3599,7 @@ webRouter.delete("/transport/trips/:id", async (req, res) => {
     if (String(current.data()?.companyId ?? "").trim() !== companyId) return res.status(403).json({ error: "forbidden" });
     await db.collection("trips").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "trips-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "trips", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4394,7 +4393,7 @@ webRouter.post("/transport/settlements", async (req, res) => {
       createdAt: now, updatedAt: now,
     });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "settlements-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "settlements", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4454,7 +4453,7 @@ webRouter.delete("/transport/settlements/:id", async (req, res) => {
     await Promise.all(deletes);
     await db.collection("settlements").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "settlements-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "settlements", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4847,7 +4846,7 @@ webRouter.post("/billing/invoices", async (req, res) => {
     const docRef = db.collection("invoices").doc();
     await docRef.set({ companyId, accountId, documentNo: String(body.documentNo ?? "").trim(), type: String(body.type ?? ""), payTerm: String(body.payTerm ?? ""), settlementId: String(body.settlementId ?? ""), settlement: String(body.settlement ?? ""), client: body.client && typeof body.client === "object" ? body.client : {}, company: body.company && typeof body.company === "object" ? body.company : {}, companyLocation: body.companyLocation && typeof body.companyLocation === "object" ? body.companyLocation : {}, issueDate: String(body.issueDate ?? ""), currency, status: String(body.status ?? "draft"), totalPrice: Number(body.totalPrice) || 0, totalTax: Number(body.totalTax) || 0, totalAmount: Number(body.totalAmount) || 0, comment: String(body.comment ?? ""), zipUrl: String(body.zipUrl ?? ""), cdrUrl: String(body.cdrUrl ?? ""), pdfUrl: String(body.pdfUrl ?? ""), operationTypeCode: String(body.operationTypeCode ?? "0101"), ...(body.dueDate != null && { dueDate: body.dueDate }), ...(body.saleOrderId && { saleOrderId: String(body.saleOrderId) }), ...(body.saleOrderCode && { saleOrderCode: String(body.saleOrderCode) }), createdAt: now, updatedAt: now });
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "invoices-count", delta: 1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "invoices", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -4909,7 +4908,7 @@ webRouter.delete("/billing/invoices/:id", async (req, res) => {
     await Promise.all([...itemsSnap.docs.map((d) => d.ref.delete()), ...creditsSnap.docs.map((d) => d.ref.delete())]);
     await db.collection("invoices").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "invoices-count", delta: -1 }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "invoices", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

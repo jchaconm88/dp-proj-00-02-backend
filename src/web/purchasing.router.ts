@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getWebFirestore } from "../lib/firebase-admin.js";
-import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
 import { getCountryByCode, filterAllowedCurrenciesByCountry } from "../data/countries.js";
 import { parseCurrencyCode, type CurrencyCode } from "../data/currencies.js";
 import {
@@ -217,8 +217,8 @@ router.post("/suppliers", async (req, res) => {
 
     const docRef = db.collection("suppliers").doc();
     await docRef.set(doc);
-    // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "suppliers-count", delta: 1 }).catch(() => {});
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "suppliers", action: "create" }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -282,8 +282,8 @@ router.delete("/suppliers/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("suppliers").doc(id).delete();
-    // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "suppliers-count", delta: -1 }).catch(() => {});
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "suppliers", action: "delete" }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -397,12 +397,8 @@ router.post("/purchase-orders", async (req, res) => {
 
     const docRef = db.collection("purchase-orders").doc();
     await docRef.set(doc);
-    // Fire-and-forget: update tenant stats counters
-    adjustCount(db, { accountId, companyId, metricKey: "purchase-orders-count", delta: 1 }).catch(() => {});
-    const totalAmount = Number(body.total) || 0;
-    if (totalAmount > 0) {
-      adjustCount(db, { accountId, companyId, metricKey: "purchase-orders-total", delta: totalAmount }).catch(() => {});
-    }
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "purchase-orders", action: "create", document: body }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -465,12 +461,8 @@ router.delete("/purchase-orders/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("purchase-orders").doc(id).delete();
-    // Fire-and-forget: update tenant stats counters
-    adjustCount(db, { accountId, companyId, metricKey: "purchase-orders-count", delta: -1 }).catch(() => {});
-    const deletedTotal = Number(current.data()?.total) || 0;
-    if (deletedTotal > 0) {
-      adjustCount(db, { accountId, companyId, metricKey: "purchase-orders-total", delta: -deletedTotal }).catch(() => {});
-    }
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "purchase-orders", action: "delete", document: current.data() as Record<string, unknown> }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -917,7 +909,7 @@ router.post("/purchase-orders/:id/receive", async (req, res) => {
 
     // Fire-and-forget: update inventory movements count
     const movementCount = items.length;
-    adjustCount(db, { accountId, companyId, metricKey: "inventory-movements-count", delta: movementCount }).catch(() => {});
+    trackMetric(db, { accountId, companyId, metricKey: "inventory-movements-count", delta: movementCount }).catch(() => {});
 
     return res.status(200).json({ ok: true });
   } catch (e) {

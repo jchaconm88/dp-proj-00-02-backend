@@ -1,6 +1,7 @@
 import type { firestore as FirebaseFirestore } from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 import type { TenantStats } from "./dashboard.types.js";
+import { listMergedMetrics } from "./dashboard-catalog.service.js";
 
 const COLLECTION = "tenant-stats";
 
@@ -12,43 +13,40 @@ function buildDocId(accountId: string, companyId?: string): string {
   return companyId ? `${accountId}_${companyId}` : `${accountId}___`;
 }
 
-/**
- * Adjusts a counter for a tenant atomically.
- * Called by other backend services when entities are created/deleted
- * (trips, invoices, settlements, etc.).
- *
- * Uses Firestore `set` with merge to create the document if it doesn't exist,
- * and `FieldValue.increment(delta)` for atomic counter updates.
- */
-export async function adjustCount(
+async function computeEntityCount(
   db: FirebaseFirestore.Firestore,
-  params: {
-    accountId: string;
-    companyId?: string;
-    metricKey: string;
-    delta: number;
-  }
-): Promise<void> {
-  const { accountId, companyId, metricKey, delta } = params;
-  const docId = buildDocId(accountId, companyId);
-  const docRef = db.collection(COLLECTION).doc(docId);
+  collectionName: string,
+  accountId: string
+): Promise<number> {
+  const snap = await db
+    .collection(collectionName)
+    .where("accountId", "==", accountId)
+    .get();
+  return snap.size;
+}
 
-  await docRef.set(
-    {
-      accountId,
-      companyId: companyId ?? null,
-      [`counters.${metricKey}`]: FieldValue.increment(delta),
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+async function computeSum(
+  db: FirebaseFirestore.Firestore,
+  collectionName: string,
+  fieldName: string,
+  accountId: string
+): Promise<number> {
+  const snap = await db
+    .collection(collectionName)
+    .where("accountId", "==", accountId)
+    .get();
+  let total = 0;
+  snap.forEach((doc) => {
+    const val = Number(doc.data()?.[fieldName] ?? 0);
+    if (!isNaN(val)) total += val;
+  });
+  return total;
 }
 
 /**
- * Recalculates all counters for a tenant by reading the existing tenant-stats document.
- *
- * Note: The full recalculation from source collections will be enhanced when the
- * snapshot composer is built. For now, this returns the existing document data.
+ * Recalculates all counters for a tenant by querying source collections.
+ * Handles entityCount (count) and sum (field sum) metric types.
+ * Custom/ratio metric types are derived later in the compose step.
  */
 export async function recalculate(
   db: FirebaseFirestore.Firestore,
@@ -57,21 +55,52 @@ export async function recalculate(
   const { accountId, companyId } = params;
   const docId = buildDocId(accountId, companyId);
   const docRef = db.collection(COLLECTION).doc(docId);
-  const snap = await docRef.get();
 
-  if (snap.exists) {
-    return { id: snap.id, ...snap.data() } as TenantStats;
+  // Get all active metric definitions
+  const mergedMetrics = await listMergedMetrics(db);
+  const activeMetrics = mergedMetrics
+    .map((m) => m.data)
+    .filter((m) => m.active && m.source?.collectionName);
+
+  const counters: Record<string, number> = {};
+
+  const countQueries = activeMetrics
+    .filter(
+      (m) =>
+        m.type === "entityCount" &&
+        m.source.deltaType === "count"
+    )
+    .map(async (m) => {
+      const value = await computeEntityCount(db, m.source.collectionName, accountId);
+      return { key: m.metricKey, value };
+    });
+
+  const sumQueries = activeMetrics
+    .filter(
+      (m) =>
+        m.type === "sum" &&
+        m.source.deltaType === "sum" &&
+        m.source.fieldName
+    )
+    .map(async (m) => {
+      const value = await computeSum(db, m.source.collectionName, m.source.fieldName!, accountId);
+      return { key: m.metricKey, value };
+    });
+
+  const results = await Promise.all([...countQueries, ...sumQueries]);
+  for (const { key, value } of results) {
+    counters[key] = value;
   }
 
-  // Document doesn't exist yet — create an empty one and return it
-  const emptyStats: Omit<TenantStats, "id"> = {
+  // Write recomputed counters to tenant-stats
+  const stats: Omit<TenantStats, "id"> = {
     accountId,
     companyId: companyId ?? null,
-    counters: {},
+    counters,
     updatedAt: FieldValue.serverTimestamp() as unknown as FirebaseFirestore.Timestamp,
   };
 
-  await docRef.set(emptyStats);
+  await docRef.set(stats);
 
-  return { id: docId, ...emptyStats } as TenantStats;
+  return { id: docId, ...stats } as TenantStats;
 }

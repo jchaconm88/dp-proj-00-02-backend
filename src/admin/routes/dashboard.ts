@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { getWebFirestore } from "../../lib/firebase-admin.js";
-import { buildSnapshotDocId, compose } from "../../features/dashboard/snapshot-composer.service.js";
+import { compose } from "../../features/dashboard/snapshot-composer.service.js";
+import { buildSnapshotDocId } from "../../features/dashboard/dashboard-utils.js";
+import { filterByPermission, filterByTarget } from "../../features/dashboard/dashboard-filters.js";
+import type { SnapshotDocument, SnapshotCardEntry, SnapshotChartEntry } from "../../features/dashboard/dashboard.types.js";
 
 const router = Router();
 
@@ -13,24 +16,44 @@ router.get("/snapshot", async (req, res) => {
   const docId = buildSnapshotDocId(accountId, null, period);
   const snap = await getWebFirestore().collection("dashboard-snapshots").doc(docId).get();
 
-  // If snapshot doesn't exist yet (e.g. new accounts), return empty structure.
   if (!snap.exists) {
     return res.status(200).json({
+      accountId,
+      companyId: null,
       period,
       cards: [],
       charts: [],
+      counters: {},
       activityItems: [],
       metadata: null,
     });
   }
 
-  const data = snap.data() ?? {};
+  const data = snap.data() as SnapshotDocument;
+  const effectivePermissions: string[] = (req as any).effectivePermissions ?? [];
+
+  let cards = Object.values(data.cards ?? {});
+  if (effectivePermissions.length > 0) {
+    cards = filterByPermission(cards, effectivePermissions) as SnapshotCardEntry[];
+  }
+  cards = filterByTarget(cards, "admin") as SnapshotCardEntry[];
+  cards.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  let charts = Object.values(data.charts ?? {});
+  if (effectivePermissions.length > 0) {
+    charts = filterByPermission(charts, effectivePermissions) as SnapshotChartEntry[];
+  }
+  charts = filterByTarget(charts, "admin") as SnapshotChartEntry[];
+
   res.status(200).json({
-    period: String((data as any).period ?? period),
-    cards: Array.isArray((data as any).cards) ? (data as any).cards : [],
-    charts: Array.isArray((data as any).charts) ? (data as any).charts : [],
-    activityItems: Array.isArray((data as any).activityItems) ? (data as any).activityItems : [],
-    metadata: (data as any).metadata ?? null,
+    accountId: data.accountId,
+    companyId: data.companyId,
+    period: data.period,
+    cards,
+    charts,
+    counters: data.counters ?? {},
+    activityItems: data.activityItems ?? [],
+    metadata: data.metadata ?? null,
   });
 });
 

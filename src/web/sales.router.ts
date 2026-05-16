@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getWebFirestore } from "../lib/firebase-admin.js";
-import { adjustCount } from "../features/dashboard/tenant-stats.service.js";
+import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
 import { getCountryByCode, filterAllowedCurrenciesByCountry } from "../data/countries.js";
 import { parseCurrencyCode, type CurrencyCode } from "../data/currencies.js";
 import {
@@ -227,8 +227,8 @@ router.post("/quotations", async (req, res) => {
 
     const docRef = db.collection("quotations").doc();
     await docRef.set(doc);
-    // Fire-and-forget: update tenant stats counter
-    adjustCount(db, { accountId, companyId, metricKey: "quotations-count", delta: 1 }).catch(() => {});
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "quotations", action: "create", document: doc }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -275,9 +275,9 @@ router.put("/quotations/:id", async (req, res) => {
     const oldStatus = String(currentData.status ?? "");
     const newStatus = body.status !== undefined ? normalizeText(body.status) : oldStatus;
     if (oldStatus !== "confirmed" && newStatus === "confirmed") {
-      adjustCount(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: 1 }).catch(() => {});
+      trackMetric(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: 1 }).catch(() => {});
     } else if (oldStatus === "confirmed" && newStatus !== "confirmed") {
-      adjustCount(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: -1 }).catch(() => {});
+      trackMetric(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: -1 }).catch(() => {});
     }
 
     return res.status(200).json({ ok: true });
@@ -301,10 +301,10 @@ router.delete("/quotations/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("quotations").doc(id).delete();
-    // Fire-and-forget: update tenant stats counters
-    adjustCount(db, { accountId, companyId, metricKey: "quotations-count", delta: -1 }).catch(() => {});
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "quotations", action: "delete", document: current.data() as Record<string, unknown> }).catch(() => {});
     if (String(current.data()?.status ?? "") === "confirmed") {
-      adjustCount(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: -1 }).catch(() => {});
+      trackMetric(db, { accountId, companyId, metricKey: "quotations-confirmed-count", delta: -1 }).catch(() => {});
     }
     return res.status(200).json({ ok: true });
   } catch (e) {
@@ -646,12 +646,8 @@ router.post("/sale-orders", async (req, res) => {
       }
     }
 
-    // Fire-and-forget: update tenant stats counters
-    adjustCount(db, { accountId, companyId, metricKey: "sale-orders-count", delta: 1 }).catch(() => {});
-    const totalAmount = Number(body.total) || 0;
-    if (totalAmount > 0) {
-      adjustCount(db, { accountId, companyId, metricKey: "sale-orders-total", delta: totalAmount }).catch(() => {});
-    }
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "sale-orders", action: "create", document: body }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -714,12 +710,8 @@ router.delete("/sale-orders/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("sale-orders").doc(id).delete();
-    // Fire-and-forget: update tenant stats counters
-    adjustCount(db, { accountId, companyId, metricKey: "sale-orders-count", delta: -1 }).catch(() => {});
-    const deletedTotal = Number(current.data()?.total) || 0;
-    if (deletedTotal > 0) {
-      adjustCount(db, { accountId, companyId, metricKey: "sale-orders-total", delta: -deletedTotal }).catch(() => {});
-    }
+    // Fire-and-forget: update dashboard snapshot
+    trackEntityChange(db, { accountId, companyId, collectionName: "sale-orders", action: "delete", document: current.data() as Record<string, unknown> }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

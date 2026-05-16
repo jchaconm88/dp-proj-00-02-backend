@@ -5,7 +5,7 @@ export interface DefaultMetricDefinition {
   type: "entityCount" | "sum" | "ratio" | "custom";
   measureType: "counterMonthly" | "gaugeCurrent";
   valueFormat: "number" | "currency" | "percentage" | "bytes";
-  source: { collectionName: string };
+  source: { collectionName: string; fieldName?: string; deltaType?: string };
   numeratorMetricKey?: string;
   denominatorMetricKey?: string;
   permissionModule?: string | null;

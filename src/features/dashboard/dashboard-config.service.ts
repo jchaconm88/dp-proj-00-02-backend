@@ -14,7 +14,8 @@ import {
   type CreateCardPayload,
   type CreateChartPayload,
 } from "./dashboard-config-validator.js";
-import { recomposeAllAffected } from "./snapshot-composer.service.js";
+import { selectiveRecompose } from "./snapshot-composer.service.js";
+import { invalidateCache } from "./definition-cache.js";
 import type {
   MetricDefinition,
   CardDefinition,
@@ -22,12 +23,66 @@ import type {
   MergedDefinition,
 } from "./dashboard.types.js";
 
-// ─── Recompose Trigger (fire-and-forget) ─────────────────────────────────────
+// ─── Change Classification ────────────────────────────────────────────────────
 
-function triggerRecompose(db: FirebaseFirestore.Firestore): void {
-  recomposeAllAffected(db).catch((err) => {
-    console.error("[dashboard-config] triggerRecompose failed:", err);
-  });
+type ChangeType = "structural" | "cosmetic";
+
+/**
+ * Classifies a definition change as structural or cosmetic.
+ * Structural changes (create/delete card/chart, modify metricKey) require
+ * selective recomposition. Cosmetic changes (label, title, icon, order) only
+ * invalidate the cache.
+ */
+function classifyMetricChange(
+  oldPayload: Partial<CreateMetricPayload> | undefined,
+  newPayload: Partial<CreateMetricPayload>
+): ChangeType {
+  // Creating or deleting is structural
+  if (!oldPayload) return "structural";
+  // Changing metricKey is structural (though currently immutable)
+  if (newPayload.metricKey && newPayload.metricKey !== oldPayload.metricKey) return "structural";
+  // Changing source config affects structure
+  if (newPayload.source && JSON.stringify(newPayload.source) !== JSON.stringify(oldPayload.source)) return "structural";
+  // Changing type or valueFormat can affect how the metric is computed
+  if (newPayload.type && newPayload.type !== oldPayload.type) return "structural";
+  if (newPayload.valueFormat && newPayload.valueFormat !== oldPayload.valueFormat) return "structural";
+  return "cosmetic";
+}
+
+function classifyCardChange(
+  oldPayload: Partial<CreateCardPayload> | undefined,
+  newPayload: Partial<CreateCardPayload>
+): ChangeType {
+  if (!oldPayload) return "structural";
+  if (newPayload.metricKey && newPayload.metricKey !== oldPayload.metricKey) return "structural";
+  return "cosmetic";
+}
+
+function classifyChartChange(
+  oldPayload: Partial<CreateChartPayload> | undefined,
+  newPayload: Partial<CreateChartPayload>
+): ChangeType {
+  if (!oldPayload) return "structural";
+  if (newPayload.metricKeys && JSON.stringify(newPayload.metricKeys) !== JSON.stringify(oldPayload.metricKeys)) return "structural";
+  return "cosmetic";
+}
+
+// ─── onDefinitionChange ──────────────────────────────────────────────────────
+
+/**
+ * Handles definition changes by invalidating cache and optionally
+ * triggering selective recomposition for structural changes.
+ */
+function onDefinitionChange(
+  db: FirebaseFirestore.Firestore,
+  changeType: ChangeType
+): void {
+  invalidateCache();
+  if (changeType === "structural") {
+    selectiveRecompose(db).catch((err) => {
+      console.error("[dashboard-config] selectiveRecompose failed:", err);
+    });
+  }
 }
 
 // ─── Metrics ─────────────────────────────────────────────────────────────────
@@ -59,7 +114,11 @@ export async function createMetric(
     type: payload.type,
     measureType: payload.measureType,
     valueFormat: payload.valueFormat,
-    source: { collectionName: payload.source!.collectionName },
+    source: {
+      collectionName: payload.source!.collectionName,
+      deltaType: (payload.source as any)?.deltaType ?? "count",
+      fieldName: (payload.source as any)?.fieldName ?? undefined,
+    },
     active: payload.active,
     target: payload.target,
     createdAt: now,
@@ -77,7 +136,7 @@ export async function createMetric(
   }
 
   const created = await db.collection("metric-definitions").add(doc);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
   return { id: created.id };
 }
 
@@ -140,7 +199,7 @@ export async function updateMetric(
   if (payload.permissionModule !== undefined) patch.permissionModule = payload.permissionModule ?? null;
 
   await docRef.update(patch);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }
 
 export async function deleteMetric(
@@ -174,7 +233,7 @@ export async function deleteMetric(
   }
 
   await docRef.delete();
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }
 
 // ─── Cards ───────────────────────────────────────────────────────────────────
@@ -222,7 +281,7 @@ export async function createCard(
   }
 
   const created = await db.collection("dashboard-card-definitions").add(doc);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
   return { id: created.id };
 }
 
@@ -286,7 +345,7 @@ export async function updateCard(
   if (payload.permissionModule !== undefined) patch.permissionModule = payload.permissionModule ?? null;
 
   await docRef.update(patch);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }
 
 export async function deleteCard(
@@ -304,7 +363,7 @@ export async function deleteCard(
   }
 
   await docRef.delete();
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }
 
 // ─── Charts ──────────────────────────────────────────────────────────────────
@@ -347,7 +406,7 @@ export async function createChart(
   };
 
   const created = await db.collection("chart-definitions").add(doc);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
   return { id: created.id };
 }
 
@@ -406,7 +465,7 @@ export async function updateChart(
   if (payload.permissionModule !== undefined) patch.permissionModule = payload.permissionModule;
 
   await docRef.update(patch);
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }
 
 export async function deleteChart(
@@ -424,5 +483,5 @@ export async function deleteChart(
   }
 
   await docRef.delete();
-  triggerRecompose(db);
+  onDefinitionChange(db, "structural");
 }

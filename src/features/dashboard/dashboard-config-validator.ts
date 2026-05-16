@@ -15,6 +15,7 @@ const MAX_LABEL_LENGTH = 120;
 const METRIC_TYPES = ["entityCount", "sum", "ratio", "custom"] as const;
 const MEASURE_TYPES = ["counterMonthly", "gaugeCurrent"] as const;
 const VALUE_FORMATS = ["number", "currency", "percentage", "bytes"] as const;
+const DELTA_TYPES = ["count", "sum", "custom"] as const;
 const CHART_TYPES = ["bar", "line", "pie", "doughnut"] as const;
 const GROUP_BY_OPTIONS = ["daily", "weekly", "monthly"] as const;
 const TARGET_OPTIONS = ["admin", "web", "both"] as const;
@@ -144,6 +145,20 @@ export function validateMetric(
   // source.collectionName: required
   if (!payload.source || !payload.source.collectionName || payload.source.collectionName.trim() === "") {
     addError(errors, "source.collectionName", "required", "source.collectionName es requerido");
+  }
+
+  // source.deltaType: validate enum
+  const rawDeltaType = (payload.source as any)?.deltaType;
+  if (rawDeltaType && !(DELTA_TYPES as readonly string[]).includes(rawDeltaType)) {
+    addError(errors, "source.deltaType", "invalid_enum", `deltaType debe ser uno de: ${DELTA_TYPES.join(", ")}`);
+  }
+
+  // source.fieldName: required when deltaType = "sum"
+  if (rawDeltaType === "sum") {
+    const rawFieldName = (payload.source as any)?.fieldName;
+    if (!rawFieldName || String(rawFieldName).trim() === "") {
+      addError(errors, "source.fieldName", "required", "fieldName es requerido cuando deltaType es sum");
+    }
   }
 
   // active: required, boolean
