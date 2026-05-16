@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { getWebFirestore } from "../lib/firebase-admin.js";
 import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
+import { updateEntitySearchIndex } from "../features/search/entity-search-index.service.js";
 import { getCountryByCode, filterAllowedCurrenciesByCountry } from "../data/countries.js";
 import { parseCurrencyCode, type CurrencyCode } from "../data/currencies.js";
 import {
@@ -399,6 +400,7 @@ router.post("/purchase-orders", async (req, res) => {
     await docRef.set(doc);
     // Fire-and-forget: update dashboard snapshot
     trackEntityChange(db, { accountId, companyId, collectionName: "purchase-orders", action: "create", document: body }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "purchase-order", action: "create", recordId: docRef.id, fields: { code: normalizeText(body.code), providerName: normalizeText(body.supplierName), status: normalizeText(body.status) || "draft" } }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -411,7 +413,7 @@ router.post("/purchase-orders", async (req, res) => {
 /** PUT /purchasing/purchase-orders/:id — Update a purchase order */
 router.put("/purchase-orders/:id", async (req, res) => {
   try {
-    const { uid, companyId } = await requireCompanyScope(req as any);
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("purchase-orders").doc(id).get();
@@ -440,6 +442,7 @@ router.put("/purchase-orders/:id", async (req, res) => {
     if (body.total !== undefined) patch.total = Number(body.total) || 0;
 
     await db.collection("purchase-orders").doc(id).update(patch);
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "purchase-order", action: "update", recordId: id, fields: { code: normalizeText(body.code), providerName: normalizeText(body.supplierName), status: normalizeText(body.status) || "draft" } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -463,6 +466,7 @@ router.delete("/purchase-orders/:id", async (req, res) => {
     await db.collection("purchase-orders").doc(id).delete();
     // Fire-and-forget: update dashboard snapshot
     trackEntityChange(db, { accountId, companyId, collectionName: "purchase-orders", action: "delete", document: current.data() as Record<string, unknown> }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "purchase-order", action: "delete", recordId: id, fields: {} }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

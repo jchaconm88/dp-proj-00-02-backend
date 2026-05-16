@@ -23,6 +23,7 @@ import purchasingRouter from "./purchasing.router.js";
 import salesRouter from "./sales.router.js";
 import inventoryRouter from "./inventory.router.js";
 import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
+import { rebuildEntitySearchIndexForCompany, updateEntitySearchIndex } from "../features/search/entity-search-index.service.js";
 import {
   getDocumentTypesByCountryAndType,
   parseDocumentTypeCategory,
@@ -427,6 +428,61 @@ webRouter.get("/system/company-users/me", async (req, res) => {
   }
 });
 
+/** Índice de búsqueda global de la empresa activa (consumo vía backend). */
+webRouter.get("/system/entity-search-index", async (req, res) => {
+  try {
+    const { companyId, accountId } = await requireCompanyScope(req as any);
+    logWebApi("entity-search-index:get:start", { companyId, accountId });
+    const db = getWebFirestore();
+    const snap = await db.collection("entity-search-indexes").doc(companyId).get();
+    const data = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
+    const docAccountId = String(data.accountId ?? "").trim();
+    if (docAccountId && docAccountId !== accountId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const entities = data.entities && typeof data.entities === "object"
+      ? (data.entities as Record<string, unknown>)
+      : {};
+
+    logWebApi("entity-search-index:get:success", {
+      companyId,
+      entityTypes: Object.keys(entities).length,
+      purchaseOrdersIndexed:
+        entities["purchase-order"] && typeof entities["purchase-order"] === "object"
+          ? Object.keys(entities["purchase-order"] as Record<string, unknown>).length
+          : 0,
+    });
+
+    return res.status(200).json({
+      companyId: String(data.companyId ?? companyId),
+      accountId: docAccountId || accountId,
+      updatedAt: data.updatedAt ?? null,
+      entities,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/system/entity-search-index GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : msg === "companyId_required" ? 400 : 500).json({ error: msg });
+  }
+});
+
+/** Reindex completo de búsqueda global para la empresa activa. */
+webRouter.post("/system/entity-search-index/rebuild", async (req, res) => {
+  try {
+    const { companyId, accountId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const summary = await rebuildEntitySearchIndexForCompany(db, { accountId, companyId });
+    return res.status(200).json({ ok: true, summary });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/system/entity-search-index/rebuild POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(msg === "forbidden" ? 403 : msg === "companyId_required" ? 400 : 500).json({ error: msg });
+  }
+});
+
 /** Usuarios de empresa por companyId (requiere pertenencia a esa empresa). */
 webRouter.get("/system/company-users", async (req, res) => {
   try {
@@ -764,6 +820,7 @@ webRouter.post("/master/clients", async (req, res) => {
     await docRef.set(doc);
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "clients", action: "create" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "client", action: "create", recordId: docRef.id, fields: { code: doc.code, businessName: doc.businessName, documentNumber: doc.documentNumber } }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -775,7 +832,7 @@ webRouter.post("/master/clients", async (req, res) => {
 
 webRouter.put("/master/clients/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("clients").doc(id).get();
@@ -839,6 +896,7 @@ webRouter.put("/master/clients/:id", async (req, res) => {
       }
     }
     await db.collection("clients").doc(id).update(patch);
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "client", action: "update", recordId: id, fields: { code: normalizeText(body.code), businessName: normalizeText(body.businessName), documentNumber: normalizeText(body.documentNumber) } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -861,6 +919,7 @@ webRouter.delete("/master/clients/:id", async (req, res) => {
     await db.collection("clients").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "clients", action: "delete" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "client", action: "delete", recordId: id, fields: {} }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1344,6 +1403,7 @@ webRouter.post("/human-resource/employees", async (req, res) => {
     });
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "employees", action: "create" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "employee", action: "create", recordId: docRef.id, fields: { code: normalizeText(body.code), fullName: String(body.firstName ?? "").trim() + " " + String(body.lastName ?? "").trim(), documentNumber: normalizeText(body.documentNo) } }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1355,7 +1415,7 @@ webRouter.post("/human-resource/employees", async (req, res) => {
 
 webRouter.put("/human-resource/employees/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("employees").doc(id).get();
@@ -1396,6 +1456,7 @@ webRouter.put("/human-resource/employees/:id", async (req, res) => {
       };
     }
     await db.collection("employees").doc(id).update(patch);
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "employee", action: "update", recordId: id, fields: { code: normalizeText(body.code), fullName: String(body.firstName ?? "").trim() + " " + String(body.lastName ?? "").trim(), documentNumber: normalizeText(body.documentNo) } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -1416,6 +1477,7 @@ webRouter.delete("/human-resource/employees/:id", async (req, res) => {
     await db.collection("employees").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "employees", action: "delete" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "employee", action: "delete", recordId: id, fields: {} }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3553,6 +3615,7 @@ webRouter.post("/transport/trips", async (req, res) => {
     });
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "trips", action: "create" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "trip", action: "create", recordId: docRef.id, fields: { code: normalizeText(body.code), origin: normalizeText(body.route), destination: normalizeText(body.client) } }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3564,7 +3627,7 @@ webRouter.post("/transport/trips", async (req, res) => {
 
 webRouter.put("/transport/trips/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("trips").doc(id).get();
@@ -3580,6 +3643,7 @@ webRouter.put("/transport/trips/:id", async (req, res) => {
     if (body.isExternalRoute !== undefined) patch.isExternalRoute = body.isExternalRoute === true;
     if (body.status !== undefined) patch.status = TRIP_STATUSES.includes(String(body.status)) ? body.status : currentData.status;
     await db.collection("trips").doc(id).update(patch);
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "trip", action: "update", recordId: id, fields: { code: normalizeText(body.code), origin: normalizeText(body.route), destination: normalizeText(body.client) } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -3600,6 +3664,7 @@ webRouter.delete("/transport/trips/:id", async (req, res) => {
     await db.collection("trips").doc(id).delete();
     // Fire-and-forget: update tenant stats counter
     trackEntityChange(db, { accountId, companyId, collectionName: "trips", action: "delete" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "trip", action: "delete", recordId: id, fields: {} }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { FieldValue } from "firebase-admin/firestore";
 import { getWebFirestore } from "../lib/firebase-admin.js";
 import { trackEntityChange } from "../features/dashboard/snapshot-incremental.service.js";
+import { updateEntitySearchIndex } from "../features/search/entity-search-index.service.js";
 import { getCountryByCode, filterAllowedCurrenciesByCountry } from "../data/countries.js";
 import { parseCurrencyCode, type CurrencyCode } from "../data/currencies.js";
 import {
@@ -717,6 +718,8 @@ router.post("/products", async (req, res) => {
 
     const docRef = db.collection("products").doc();
     await docRef.set(doc);
+    trackEntityChange(db, { accountId, companyId, collectionName: "products", action: "create" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "product", action: "create", recordId: docRef.id, fields: { code: String(body.code ?? "").trim(), name, status: body.active !== false ? "active" : "inactive" } }).catch(() => {});
     res.status(201).json({ ok: true, id: docRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -729,7 +732,7 @@ router.post("/products", async (req, res) => {
 /** PUT /inventory/products/:id — Update a product */
 router.put("/products/:id", async (req, res) => {
   try {
-    const { uid, companyId } = await requireCompanyScope(req as any);
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("products").doc(id).get();
@@ -769,6 +772,8 @@ router.put("/products/:id", async (req, res) => {
     if (body.active !== undefined) patch.active = body.active !== false;
 
     await db.collection("products").doc(id).update(patch);
+    trackEntityChange(db, { accountId, companyId, collectionName: "products", action: "update" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "product", action: "update", recordId: id, fields: { code: body.code !== undefined ? String(body.code).trim() : undefined, name: body.name !== undefined ? String(body.name).trim() : undefined, status: body.active !== undefined ? (body.active !== false ? "active" : "inactive") : undefined } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -781,7 +786,7 @@ router.put("/products/:id", async (req, res) => {
 /** DELETE /inventory/products/:id — Delete a product */
 router.delete("/products/:id", async (req, res) => {
   try {
-    const { companyId } = await requireCompanyScope(req as any);
+    const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const { id } = req.params;
     const current = await db.collection("products").doc(id).get();
@@ -790,6 +795,8 @@ router.delete("/products/:id", async (req, res) => {
       return res.status(403).json({ error: "forbidden" });
     }
     await db.collection("products").doc(id).delete();
+    trackEntityChange(db, { accountId, companyId, collectionName: "products", action: "delete" }).catch(() => {});
+    updateEntitySearchIndex(db, { accountId, companyId, entityId: "product", action: "delete", recordId: id, fields: {} }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
