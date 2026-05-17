@@ -12,6 +12,30 @@ import {
 } from "../data/units-of-measure.js";
 
 const router = Router();
+const PRODUCT_TYPES = new Set([
+  "good",
+  "service",
+  "raw_material",
+  "finished_good",
+  "semi_finished",
+  "by_product",
+  "supply",
+]);
+
+function normalizeProductType(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  return PRODUCT_TYPES.has(raw) ? raw : "good";
+}
+
+function normalizeText(value: unknown): string | undefined {
+  const out = String(value ?? "").trim();
+  return out || undefined;
+}
+
+/** Firestore no acepta `undefined`; usar en POST/PUT para campos opcionales. */
+function normalizeTextForFirestore(value: unknown): string {
+  return normalizeText(value) ?? "";
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -134,11 +158,11 @@ router.post("/movements", async (req, res) => {
       });
     }
     const unitFields = unitDenormalizedFirestoreFields(unitRow);
-    const reason = String(body.reason ?? "").trim() || undefined;
-    const referenceType = String(body.referenceType ?? "").trim() || undefined;
-    const referenceId = String(body.referenceId ?? "").trim() || undefined;
-    const notes = String(body.notes ?? "").trim() || undefined;
-    const code = String(body.code ?? "").trim() || undefined;
+    const reason = normalizeTextForFirestore(body.reason);
+    const referenceType = normalizeTextForFirestore(body.referenceType);
+    const referenceId = normalizeTextForFirestore(body.referenceId);
+    const notes = normalizeTextForFirestore(body.notes);
+    const code = normalizeTextForFirestore(body.code);
     const locationName = String(body.locationName ?? "").trim();
 
     // --- Firestore transaction ---
@@ -701,7 +725,7 @@ router.post("/products", async (req, res) => {
       description: body.description ? String(body.description).trim() : undefined,
       categoryId: body.categoryId ? String(body.categoryId).trim() : undefined,
       categoryName: body.categoryName ? String(body.categoryName).trim() : undefined,
-      type: body.type === "service" ? "service" : "good",
+      type: normalizeProductType(body.type),
       ...unitFields,
       purchasePrice: Number(body.purchasePrice) || 0,
       salePrice: Number(body.salePrice) || 0,
@@ -762,7 +786,7 @@ router.put("/products/:id", async (req, res) => {
     if (body.currency !== undefined) {
       patch.currency = await normalizeCurrencyOrThrow(db, companyId, body.currency);
     }
-    if (body.type !== undefined) patch.type = body.type === "service" ? "service" : "good";
+    if (body.type !== undefined) patch.type = normalizeProductType(body.type);
     const numericFields = ["purchasePrice", "salePrice"];
     for (const f of numericFields) {
       if (body[f] !== undefined) patch[f] = Number(body[f]) || 0;

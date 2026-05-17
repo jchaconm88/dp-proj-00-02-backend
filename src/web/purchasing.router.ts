@@ -10,8 +10,75 @@ import {
   unitFieldsForApiResponse,
 } from "../data/units-of-measure.js";
 import { FieldValue } from "firebase-admin/firestore";
+import { generateSequenceCode } from "../lib/sequences.service.js";
 
 const router = Router();
+
+type PurchaseReceiveWork = {
+  itemId: string;
+  receivedQty: number;
+  productId: string;
+  productName: string;
+  unitFirestore: Record<string, string>;
+  alreadyReceived: number;
+};
+
+function buildPurchaseReceiveWorkList(
+  allItemsMap: Map<string, FirebaseFirestore.QueryDocumentSnapshot>,
+  items: Array<{ itemId: string; receivedQuantity: number }>
+): PurchaseReceiveWork[] {
+  const workList: PurchaseReceiveWork[] = [];
+  const batchQtyByItemId = new Map<string, number>();
+
+  for (const receivedItem of items) {
+    const itemId = String(receivedItem.itemId ?? "").trim();
+    const receivedQty = Number(receivedItem.receivedQuantity);
+
+    if (!itemId) {
+      throw new Error("validation_error:itemId is required for each item");
+    }
+
+    const itemDoc = allItemsMap.get(itemId);
+    if (!itemDoc) {
+      throw new Error(`validation_error:Item "${itemId}" not found in this purchase order`);
+    }
+
+    const itemData = itemDoc.data();
+    const orderedQuantity = Number(itemData.quantity) || 0;
+    const alreadyReceived = Number(itemData.receivedQuantity) || 0;
+    const pendingQuantity = orderedQuantity - alreadyReceived;
+
+    if (receivedQty < 1) {
+      throw new Error(`validation_error:receivedQuantity for item "${itemId}" must be >= 1`);
+    }
+    const batchSoFar = batchQtyByItemId.get(itemId) || 0;
+    if (batchSoFar + receivedQty > pendingQuantity) {
+      throw new Error(
+        `validation_error:receivedQuantity for item "${itemId}" must be <= ${pendingQuantity} (pending). Ordered: ${orderedQuantity}, already received: ${alreadyReceived}, already in this request: ${batchSoFar}`
+      );
+    }
+    batchQtyByItemId.set(itemId, batchSoFar + receivedQty);
+
+    const productId = String(itemData.productId ?? "").trim();
+    const productName = String(itemData.productName ?? "").trim();
+    const unitRow = resolveUnitOfMeasureFromBody(itemData as Record<string, unknown>);
+    if (!unitRow) {
+      throw new Error("validation_error:Invalid or missing unit of measure on purchase order item");
+    }
+    const unitFirestore = unitDenormalizedFirestoreFields(unitRow);
+
+    workList.push({
+      itemId,
+      receivedQty,
+      productId,
+      productName,
+      unitFirestore,
+      alreadyReceived,
+    });
+  }
+
+  return workList;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -725,77 +792,47 @@ router.post("/purchase-orders/:id/receive", async (req, res) => {
       });
     }
 
-    // --- Extract location info from the order ---
-    const locationId = String(orderData.locationId ?? "").trim();
-    const locationName = String(orderData.locationName ?? "").trim();
+    const movementWarehouseName = normalizeTextForFirestore(warehouseName);
+    const movementLocationId = normalizeTextForFirestore(body.locationId);
+    const movementLocationName = normalizeTextForFirestore(body.locationName);
+    if (!movementWarehouseName) {
+      return res.status(400).json({ error: "validation_error", message: "warehouseName is required" });
+    }
+    if (!movementLocationId) {
+      return res.status(400).json({ error: "validation_error", message: "locationId is required" });
+    }
+    if (!movementLocationName) {
+      return res.status(400).json({ error: "validation_error", message: "locationName is required" });
+    }
+
+    const itemsCollRef = db.collection("purchase-orders").doc(id).collection("purchase-order-items");
+
+    // Validación previa + códigos de movimiento (misma secuencia que POST /inventory/movements)
+    const preItemsSnap = await itemsCollRef.get();
+    const preItemsMap = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+    preItemsSnap.docs.forEach((doc) => preItemsMap.set(doc.id, doc));
+    const preWorkList = buildPurchaseReceiveWorkList(preItemsMap, items);
+
+    const movementCodes: string[] = [];
+    for (let i = 0; i < preWorkList.length; i++) {
+      movementCodes.push(
+        await generateSequenceCode(db, "web", accountId, "inventory-movement", "", companyId)
+      );
+    }
+
+    let movementCodeIndex = 0;
 
     // --- Run Firestore transaction ---
     // Firestore: all reads before any writes. The previous loop interleaved
     // movement writes with stock reads, which triggers "all reads before all writes".
     await db.runTransaction(async (transaction) => {
-      const itemsCollRef = db.collection("purchase-orders").doc(id).collection("purchase-order-items");
       const allItemsSnap = await transaction.get(itemsCollRef);
       const allItemsMap = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
       allItemsSnap.docs.forEach((doc) => allItemsMap.set(doc.id, doc));
 
-      // b. Validate each received item + build work list (no writes yet)
-      type ReceiveWork = {
-        itemId: string;
-        receivedQty: number;
-        productId: string;
-        productName: string;
-        unitFirestore: Record<string, string>;
-        alreadyReceived: number;
-      };
-      const workList: ReceiveWork[] = [];
-      /** Suma por ítem en esta misma petición (evita superar pendiente con líneas duplicadas). */
-      const batchQtyByItemId = new Map<string, number>();
-
-      for (const receivedItem of items) {
-        const itemId = String(receivedItem.itemId ?? "").trim();
-        const receivedQty = Number(receivedItem.receivedQuantity);
-
-        if (!itemId) {
-          throw new Error("validation_error:itemId is required for each item");
-        }
-
-        const itemDoc = allItemsMap.get(itemId);
-        if (!itemDoc) {
-          throw new Error(`validation_error:Item "${itemId}" not found in this purchase order`);
-        }
-
-        const itemData = itemDoc.data();
-        const orderedQuantity = Number(itemData.quantity) || 0;
-        const alreadyReceived = Number(itemData.receivedQuantity) || 0;
-        const pendingQuantity = orderedQuantity - alreadyReceived;
-
-        if (receivedQty < 1) {
-          throw new Error(`validation_error:receivedQuantity for item "${itemId}" must be >= 1`);
-        }
-        const batchSoFar = batchQtyByItemId.get(itemId) || 0;
-        if (batchSoFar + receivedQty > pendingQuantity) {
-          throw new Error(
-            `validation_error:receivedQuantity for item "${itemId}" must be <= ${pendingQuantity} (pending). Ordered: ${orderedQuantity}, already received: ${alreadyReceived}, already in this request: ${batchSoFar}`
-          );
-        }
-        batchQtyByItemId.set(itemId, batchSoFar + receivedQty);
-
-        const productId = String(itemData.productId ?? "").trim();
-        const productName = String(itemData.productName ?? "").trim();
-        const unitRow = resolveUnitOfMeasureFromBody(itemData as Record<string, unknown>);
-        if (!unitRow) {
-          throw new Error("validation_error:Invalid or missing unit of measure on purchase order item");
-        }
-        const unitFirestore = unitDenormalizedFirestoreFields(unitRow);
-
-        workList.push({
-          itemId,
-          receivedQty,
-          productId,
-          productName,
-          unitFirestore,
-          alreadyReceived,
-        });
+      const workList = buildPurchaseReceiveWorkList(allItemsMap, items);
+      if (workList.length !== movementCodes.length) {
+        throw new Error("concurrent_modification");
       }
 
       // c. Read every stock-level doc touched by this reception (reads only)
@@ -823,18 +860,19 @@ router.post("/purchase-orders/:id/receive", async (req, res) => {
       for (const w of workList) {
         const movementRef = db.collection("inventory-movements").doc();
         transaction.set(movementRef, {
+          code: movementCodes[movementCodeIndex++] ?? "",
           type: "entry",
           productId: w.productId,
           productName: w.productName,
           warehouseId,
-          warehouseName,
+          warehouseName: movementWarehouseName,
           quantity: w.receivedQty,
           ...w.unitFirestore,
           referenceType: "purchase-order",
           referenceId: id,
           date: now,
-          locationId,
-          locationName,
+          locationId: movementLocationId,
+          locationName: movementLocationName,
           companyId,
           accountId,
           createAt: new Date(),
@@ -875,7 +913,8 @@ router.post("/purchase-orders/:id/receive", async (req, res) => {
             quantity: newStock,
             ...w.unitFirestore,
             lastMovementDate: now,
-            locationId,
+            locationId: movementLocationId,
+            locationName: movementLocationName,
             companyId,
             accountId,
           });
@@ -924,6 +963,18 @@ router.post("/purchase-orders/:id/receive", async (req, res) => {
     // Handle validation errors with custom messages
     if (msg.startsWith("validation_error:")) {
       return res.status(400).json({ error: "validation_error", message: msg.replace("validation_error:", "") });
+    }
+    if (msg === "concurrent_modification") {
+      return res.status(409).json({
+        error: "concurrent_modification",
+        message: "La orden cambió mientras se recibía. Vuelva a intentar.",
+      });
+    }
+    if (msg === "sequence_not_found") {
+      return res.status(412).json({
+        error: "sequence_not_found",
+        message: "No hay secuencia activa para movimientos de inventario (inventory-movement).",
+      });
     }
 
     return res.status(httpStatus(msg)).json({ error: msg });

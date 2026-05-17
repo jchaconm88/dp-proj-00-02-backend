@@ -105,6 +105,7 @@ export async function rebuildEntitySearchIndexForCompany(
     "sale-order": {},
     quotation: {},
     product: {},
+    "production-order": {},
   };
 
   const [
@@ -115,6 +116,7 @@ export async function rebuildEntitySearchIndexForCompany(
     saleOrdersSnap,
     quotationsSnap,
     productsSnap,
+    productionOrdersSnap,
   ] = await Promise.all([
     db.collection("trips").where("companyId", "==", companyId).get(),
     db.collection("clients").where("companyId", "==", companyId).get(),
@@ -123,6 +125,7 @@ export async function rebuildEntitySearchIndexForCompany(
     db.collection("sale-orders").where("companyId", "==", companyId).get(),
     db.collection("quotations").where("companyId", "==", companyId).get(),
     db.collection("products").where("companyId", "==", companyId).get(),
+    db.collection("production-orders").where("companyId", "==", companyId).get(),
   ]);
 
   for (const d of tripsSnap.docs) {
@@ -181,6 +184,14 @@ export async function rebuildEntitySearchIndexForCompany(
       status: String(
         row.status ?? (row.active === false ? "inactive" : "active")
       ),
+    });
+  }
+  for (const d of productionOrdersSnap.docs) {
+    const row = d.data() ?? {};
+    entities["production-order"][d.id] = buildIndexRecord({
+      code: String(row.code ?? ""),
+      finishedProductName: String(row.finishedProductName ?? ""),
+      status: String(row.status ?? ""),
     });
   }
 
