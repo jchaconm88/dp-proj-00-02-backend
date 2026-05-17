@@ -136,6 +136,66 @@ Terraform vive en **`dp-proj-00-02-infra`** (no en este repo). Tras `terraform a
 | `CORS_ORIGINS` | Variable | **Orígenes del Admin/Web en producción** (coma o `|`). Ej. `https://...-adm.firebaseapp.com,https://...-adm.web.app`. El deploy convierte comas a `|` para `gcloud` (las comas rompen `--update-env-vars`). Sin esto, Cloud Run usa el default de `server.ts` (solo localhost). |
 | `DEPLOY_ENVIRONMENT` | Variable (repo) | Si no usáis `workflow_dispatch`, entorno por defecto para pushes a `main` (p. ej. `dev`). |
 
+## Llamadas operativas obligatorias (Global Search + Dashboard)
+
+Esta seccion define las llamadas que **deben ejecutarse** para que funcionen correctamente la busqueda global y las metricas del dashboard.
+
+### 1) Hooks en mutaciones CRUD (backend)
+
+En endpoints de escritura (`POST/PUT/DELETE`) de entidades de negocio:
+
+- Usar `trackEntityChange(...)` para actualizar metricas incrementales del dashboard (`dashboard-snapshots`).
+- Usar `updateEntitySearchIndex(...)` para actualizar el indice materializado `entity-search-indexes` (Web).
+- En eventos de dominio especiales (no mapean 1:1 con un CRUD), usar `trackMetric(...)` con `metricKey` y `delta` explicitos.
+
+Ejemplo de evento especial ya implementado:
+
+- Recepcion de compras (`purchase-orders/:id/receive`) incrementa `inventory-movements-count` via `trackMetric`.
+
+### 2) Endpoints operativos de busqueda global
+
+Web:
+
+- `GET /web/system/entity-search-index?companyId=...` (lectura del indice materializado).
+- `POST /web/system/entity-search-index/rebuild?companyId=...` (reindexacion completa de historicos).
+
+Admin:
+
+- `GET /admin/system/entity-search-index?accountId=...`
+- `POST /admin/system/entity-search-index/rebuild?accountId=...`
+
+### 3) Endpoints operativos de dashboard
+
+Snapshot:
+
+- Web: `GET /web/dashboard/snapshot?companyId=...&period=YYYY-MM`
+- Admin: `GET /admin/dashboard/snapshot?accountId=...&period=YYYY-MM`
+
+Recompose manual (bootstrap, correccion o cambios de definiciones):
+
+- Web: `POST /web/dashboard/web/recompose` body `{ companyId, period? }`
+- Admin: `POST /admin/dashboard/recompose` body `{ accountId, period? }`
+
+### 4) Regla de uso recomendada
+
+- **Operacion normal diaria:** usar solo hooks incrementales (`trackEntityChange`, `updateEntitySearchIndex`, `trackMetric`).
+- **Recompose/rebuild manual:** ejecutar despues de cambios estructurales, altas de nuevas metricas/entidades indexadas o correccion de historicos.
+- **No depender de `firestore.rules` para estos flujos:** se ejecutan con Admin SDK en backend.
+
+### 5) Guia para modulos nuevos
+
+Para estandarizar implementaciones nuevas y conservar compatibilidad con lo existente, seguir:
+
+- `../MODULOS_NUEVOS_COMPATIBILIDAD.md`
+
+Checklist minimo backend para entidad nueva:
+
+1. CRUD + permisos + scoping (`accountId`/`companyId`).
+2. Hook `trackEntityChange(...)` en mutaciones.
+3. Hook `updateEntitySearchIndex(...)` si la entidad participa en busqueda global.
+4. `trackMetric(...)` en eventos de negocio especiales.
+5. Operacion post-deploy: rebuild de indices y recompose de snapshot.
+
 ## Docker (Cloud Run)
 
 Build:

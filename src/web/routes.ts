@@ -22,6 +22,7 @@ import dashboardSnapshotRouter from "../features/dashboard/dashboard-snapshot.ro
 import purchasingRouter from "./purchasing.router.js";
 import salesRouter from "./sales.router.js";
 import inventoryRouter from "./inventory.router.js";
+import platformRouter from "./platform.router.js";
 import { trackEntityChange, trackMetric } from "../features/dashboard/snapshot-incremental.service.js";
 import { rebuildEntitySearchIndexForCompany, updateEntitySearchIndex } from "../features/search/entity-search-index.service.js";
 import {
@@ -65,6 +66,7 @@ webRouter.use("/dashboard", dashboardSnapshotRouter);
 webRouter.use("/purchasing", purchasingRouter);
 webRouter.use("/sales", salesRouter);
 webRouter.use("/inventory", inventoryRouter);
+webRouter.use("/platform", platformRouter);
 
 /** Perfil del usuario de sesiÃ³n (doc `users/{authUid}` en Firestore Web). */
 webRouter.get("/me", async (req, res) => {
