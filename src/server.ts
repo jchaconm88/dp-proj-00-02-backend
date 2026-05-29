@@ -4,6 +4,7 @@ import { adminRouter } from "./admin/routes.js";
 import { webRouter } from "./web/routes.js";
 import { landingRouter } from "./landing/routes.js";
 import { mobileRouter } from "./mobile/routes.js";
+import { integrationRouter } from "./integration/integration.router.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -30,7 +31,7 @@ app.use((req, res, next) => {
   }
 
   res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("access-control-allow-headers", "authorization,content-type");
+  res.setHeader("access-control-allow-headers", "authorization,content-type,idempotency-key");
   if (req.method === "OPTIONS") return res.status(204).send();
   next();
 });
@@ -57,6 +58,7 @@ app.get("/healthz", (_req, res) => res.status(200).json({ ok: true }));
 
 app.use("/admin", adminRouter);
 app.use("/web", webRouter);
+app.use("/api/v1", integrationRouter);
 app.use("/landing", landingRouter);
 app.use("/mobile", mobileRouter);
 

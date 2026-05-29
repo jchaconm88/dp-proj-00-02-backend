@@ -1,0 +1,495 @@
+openapi: "3.1.0"
+info:
+  title: ERP Integration API v1
+  version: "1.0.0"
+  description: |
+    API pública estándar del ERP. WooCommerce es el primer consumidor;
+    cualquier sistema externo usa el mismo contrato, credenciales y documentación.
+
+    ## Autenticación
+    1. Obtener API Key + Secret desde el panel Admin.
+    2. `POST /api/v1/auth/token` con `api_key` y `api_secret`.
+    3. Incluir `Authorization: Bearer <token>` en las requests.
+
+    ## Paginación
+    Parámetros: `page` (1-based), `per_page` (max 100).
+    Respuesta: `{ data: [...], pagination: { total, page, per_page, total_pages } }`.
+
+    ## Errores
+    Formato RFC 7807 `application/problem+json`.
+
+    ## Rate Limit
+    60 requests/min por API key. Header `Retry-After` en respuestas 429.
+
+    ## Webhooks salientes
+    Eventos enviados vía HMAC-SHA256 a la URL configurada en Admin.
+    Header: `X-ERP-Signature: HMAC-SHA256(body, webhookSecret)`.
+servers:
+  - url: /api/v1
+    description: Relative to deployment base URL
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+    Pagination:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        per_page: { type: integer }
+        total_pages: { type: integer }
+    Product:
+      type: object
+      properties:
+        sku: { type: string }
+        name: { type: string }
+        description: { type: string }
+        category_path: { type: array, items: { type: string } }
+        ecommerce_status: { type: string, enum: [active, inactive, discontinued] }
+        sale_price: { type: number }
+        sale_price_promo: { type: number, nullable: true }
+        currency: { type: string }
+        images: { type: array, items: { type: string } }
+        attribute_definitions:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        attribute_labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Human-readable label per attribute type code
+        variants: { type: array, items: { $ref: "#/components/schemas/ProductVariant" } }
+        updated_at: { type: string, format: date-time }
+    ProductVariant:
+      type: object
+      properties:
+        sku: { type: string }
+        attributes:
+          type: object
+          additionalProperties: { type: string }
+        sale_price: { type: number }
+        sale_price_promo: { type: number, nullable: true }
+        weight_kg: { type: number }
+        images: { type: array, items: { type: string } }
+        active: { type: boolean }
+    StockLevel:
+      type: object
+      properties:
+        sku: { type: string }
+        stock_quantity: { type: integer }
+        reserved: { type: integer }
+        available: { type: integer }
+        warehouse: { type: string }
+        updated_at: { type: string, format: date-time }
+    Price:
+      type: object
+      properties:
+        sku: { type: string }
+        sale_price: { type: number }
+        sale_price_promo: { type: number, nullable: true }
+        currency: { type: string }
+        price_list: { type: string }
+        updated_at: { type: string, format: date-time }
+    OrderCreate:
+      type: object
+      required: [channel, external_id, items]
+      properties:
+        channel: { type: string, enum: [woocommerce, pos, api] }
+        external_id: { type: string }
+        customer_external_id: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            required: [sku, quantity, unit_price]
+            properties:
+              sku: { type: string }
+              quantity: { type: number }
+              unit_price: { type: number }
+        notes: { type: string }
+    OrderCreateResponse:
+      type: object
+      properties:
+        erp_order_id: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    Customer:
+      type: object
+      required: [external_id, name]
+      properties:
+        external_id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        document_type: { type: string }
+        document_number: { type: string }
+        address: { type: string }
+    TokenRequest:
+      type: object
+      required: [api_key, api_secret]
+      properties:
+        api_key: { type: string }
+        api_secret: { type: string }
+    TokenResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: integer }
+    OrderStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    PaymentCreate:
+      type: object
+      required: [amount, method]
+      properties:
+        amount: { type: number }
+        method: { type: string }
+        transaction_id: { type: string }
+    ShippingRateRequest:
+      type: object
+      properties:
+        destination: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              sku: { type: string }
+              quantity: { type: integer }
+    ShippingRate:
+      type: object
+      properties:
+        carrier: { type: string }
+        service: { type: string }
+        rate: { type: number }
+        currency: { type: string }
+        estimated_days: { type: integer }
+    Shipment:
+      type: object
+      properties:
+        carrier: { type: string }
+        tracking_number: { type: string }
+        tracking_url: { type: string }
+        status: { type: string }
+        estimated_delivery: { type: string, format: date-time }
+    Invoice:
+      type: object
+      properties:
+        invoice_id: { type: string }
+        series: { type: string }
+        number: { type: string }
+        status: { type: string }
+        pdf_url: { type: string }
+        cdr_url: { type: string }
+  parameters:
+    pageParam:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    perPageParam:
+      name: per_page
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+    updatedSinceParam:
+      name: updated_since
+      in: query
+      schema: { type: string, format: date-time }
+    skusParam:
+      name: skus
+      in: query
+      schema: { type: string }
+      description: Comma-separated SKUs, max 100
+paths:
+  /auth/token:
+    post:
+      tags: [Auth]
+      summary: Authenticate and receive JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+      responses:
+        "200":
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service healthy
+  /openapi.json:
+    get:
+      tags: [System]
+      summary: OpenAPI spec in JSON format
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 JSON
+  /products:
+    get:
+      tags: [Catalog]
+      summary: List products with variants
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pageParam"
+        - $ref: "#/components/parameters/perPageParam"
+        - $ref: "#/components/parameters/updatedSinceParam"
+        - name: category
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Product list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+  /products/{sku}:
+    get:
+      tags: [Catalog]
+      summary: Get product by SKU
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Product found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          description: Product not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /inventory/stock:
+    get:
+      tags: [Inventory]
+      summary: Get stock levels by SKUs
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/skusParam"
+      responses:
+        "200":
+          description: Stock levels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StockLevel"
+  /products/prices:
+    get:
+      tags: [Inventory]
+      summary: Get prices by SKUs
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/skusParam"
+        - name: price_list
+          in: query
+          schema: { type: string, default: web }
+      responses:
+        "200":
+          description: Price list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Price"
+  /orders:
+    post:
+      tags: [Sales]
+      summary: Create order from external system
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+          description: Optional idempotency key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCreate"
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderCreateResponse"
+        "409":
+          description: Duplicate external_id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /orders/{id}/status:
+    put:
+      tags: [Sales]
+      summary: Update order status
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderStatusUpdate"
+      responses:
+        "200":
+          description: Status updated
+  /orders/{id}/payments:
+    post:
+      tags: [Sales]
+      summary: Register payment for order
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentCreate"
+      responses:
+        "200":
+          description: Payment registered
+  /orders/{id}/shipment:
+    get:
+      tags: [Logistics]
+      summary: Get shipment tracking for order
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Shipment data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shipment"
+  /shipping/rates:
+    post:
+      tags: [Logistics]
+      summary: Calculate shipping rates
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShippingRateRequest"
+      responses:
+        "200":
+          description: Available rates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ShippingRate"
+  /orders/{id}/invoice:
+    post:
+      tags: [Billing]
+      summary: Generate invoice for order
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invoice generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+  /customers:
+    post:
+      tags: [Sales]
+      summary: Create/upsert customer
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Customer"
+      responses:
+        "201":
+          description: Customer created

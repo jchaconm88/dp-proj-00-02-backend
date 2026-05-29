@@ -411,6 +411,66 @@
         { "fieldPath": "companyId", "order": "ASCENDING" },
         { "fieldPath": "locationId", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "stock-levels",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "sku", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sale-orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "channel", "order": "ASCENDING" },
+        { "fieldPath": "externalId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sale-orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "accountId", "order": "ASCENDING" },
+        { "fieldPath": "channel", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "products",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "updateAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "products",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "updateAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "variants",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "sku", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "integration-webhook-outbox",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountId", "order": "ASCENDING" },
+        { "fieldPath": "companyId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

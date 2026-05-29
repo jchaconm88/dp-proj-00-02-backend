@@ -10,6 +10,19 @@ import {
   unitDenormalizedFirestoreFields,
   unitFieldsForApiResponse,
 } from "../data/units-of-measure.js";
+import {
+  VARIANT_ATTRIBUTE_TYPE_CODE_RE,
+  buildAttributeDefinitions,
+  buildVariantAttributeLabels,
+  loadVariantAttributeTypesByCode,
+  parseVariantAttributeLabels,
+  normalizeAttributesInput,
+  normalizeVariantTypeCode,
+  normalizeVariantTypeValues,
+  parseVariantAttributeTypeCodes,
+  validateVariantAttributeTypeCodes,
+  validateVariantAttributes,
+} from "./variant-attribute-types.helpers.js";
 
 const router = Router();
 const PRODUCT_TYPES = new Set([
@@ -35,6 +48,18 @@ function normalizeText(value: unknown): string | undefined {
 /** Firestore no acepta `undefined`; usar en POST/PUT para campos opcionales. */
 function normalizeTextForFirestore(value: unknown): string {
   return normalizeText(value) ?? "";
+}
+
+function validateVariantSkuAgainstParent(parentSku: string, variantSku: string): string | null {
+  const variant = variantSku.trim();
+  if (!variant) {
+    return "El SKU de la variación es obligatorio.";
+  }
+  const parent = parentSku.trim();
+  if (parent && parent.toLowerCase() === variant.toLowerCase()) {
+    return "El SKU de la variación debe ser distinto al SKU del producto padre.";
+  }
+  return null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -348,6 +373,24 @@ router.post("/movements", async (req, res) => {
     // Fire-and-forget: update dashboard snapshot
     trackEntityChange(db, { accountId, companyId, collectionName: "inventory-movements", action: "create" }).catch(() => {});
 
+    const productDoc = await db.collection("products").doc(productId).get();
+    const pd = productDoc.data() ?? {};
+    const stockSku = String(pd.sku ?? pd.code ?? productId).trim();
+    const { emit } = await import("../integration/integration-events.js");
+    emit({
+      companyId,
+      accountId,
+      type: "stock_updated",
+      payload: {
+        sku: stockSku,
+        productId,
+        warehouse: warehouseName,
+        movementType: type,
+        quantity,
+        updatedAt: new Date().toISOString(),
+      },
+    }).catch(() => {});
+
     return res.status(201).json({ id: movementRef.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
@@ -625,6 +668,198 @@ router.delete("/product-categories/:id", async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// VARIANT ATTRIBUTE TYPES CRUD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function toVariantAttributeTypeRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record<string, unknown> {
+  const d = doc.data() ?? {};
+  return {
+    id: doc.id,
+    code: String(d.code ?? ""),
+    label: String(d.label ?? ""),
+    values: normalizeVariantTypeValues(d.values),
+    sortOrder: Number(d.sortOrder) || 0,
+    active: d.active !== false,
+    companyId: String(d.companyId ?? ""),
+    accountId: String(d.accountId ?? ""),
+    createAt: d.createAt ?? null,
+    createBy: d.createBy ? String(d.createBy) : undefined,
+    updateAt: d.updateAt ?? null,
+    updateBy: d.updateBy ? String(d.updateBy) : undefined,
+  };
+}
+
+/** GET /inventory/variant-attribute-types */
+router.get("/variant-attribute-types", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const snap = await db
+      .collection("variant-attribute-types")
+      .where("companyId", "==", companyId)
+      .where("accountId", "==", accountId)
+      .get();
+    const items = snap.docs.map(toVariantAttributeTypeRecord);
+    items.sort((a, b) => (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0));
+    res.status(200).json({ items, total: items.length });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/variant-attribute-types GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** GET /inventory/variant-attribute-types/:id */
+router.get("/variant-attribute-types/:id", async (req, res) => {
+  try {
+    const { companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const snap = await db.collection("variant-attribute-types").doc(req.params.id).get();
+    if (!snap.exists) return res.status(404).json({ error: "not_found" });
+    const data = snap.data() ?? {};
+    if (String(data.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    return res.status(200).json(toVariantAttributeTypeRecord(snap as any));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/variant-attribute-types/:id GET] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** POST /inventory/variant-attribute-types */
+router.post("/variant-attribute-types", async (req, res) => {
+  try {
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const now = new Date();
+    const body = req.body ?? {};
+    const code = normalizeVariantTypeCode(body.code);
+    const label = String(body.label ?? "").trim();
+    if (!code) return res.status(400).json({ error: "validation_error", message: "code is required" });
+    if (!VARIANT_ATTRIBUTE_TYPE_CODE_RE.test(code)) {
+      return res.status(400).json({
+        error: "validation_error",
+        message: "code must be lowercase alphanumeric with underscores or hyphens",
+      });
+    }
+    if (!label) return res.status(400).json({ error: "validation_error", message: "label is required" });
+
+    const dup = await db
+      .collection("variant-attribute-types")
+      .where("companyId", "==", companyId)
+      .where("code", "==", code)
+      .limit(1)
+      .get();
+    if (!dup.empty) {
+      return res.status(409).json({ error: "duplicate_code", message: `code "${code}" already exists` });
+    }
+
+    const docRef = db.collection("variant-attribute-types").doc();
+    await docRef.set({
+      companyId,
+      accountId,
+      code,
+      label,
+      values: normalizeVariantTypeValues(body.values),
+      sortOrder: Number(body.sortOrder) || 0,
+      active: body.active !== false,
+      createAt: now,
+      createBy: uid,
+      updateAt: now,
+      updateBy: uid,
+    });
+    res.status(201).json({ ok: true, id: docRef.id });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/variant-attribute-types POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** PUT /inventory/variant-attribute-types/:id */
+router.put("/variant-attribute-types/:id", async (req, res) => {
+  try {
+    const { uid, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { id } = req.params;
+    const current = await db.collection("variant-attribute-types").doc(id).get();
+    if (!current.exists) return res.status(404).json({ error: "not_found" });
+    if (String(current.data()?.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const now = new Date();
+    const body = req.body ?? {};
+    const patch: Record<string, unknown> = { updateAt: now, updateBy: uid };
+
+    if (body.code !== undefined) {
+      const code = normalizeVariantTypeCode(body.code);
+      if (!code) return res.status(400).json({ error: "validation_error", message: "code is required" });
+      if (!VARIANT_ATTRIBUTE_TYPE_CODE_RE.test(code)) {
+        return res.status(400).json({
+          error: "validation_error",
+          message: "code must be lowercase alphanumeric with underscores or hyphens",
+        });
+      }
+      const curCode = normalizeVariantTypeCode(current.data()?.code);
+      if (code !== curCode) {
+        const dup = await db
+          .collection("variant-attribute-types")
+          .where("companyId", "==", companyId)
+          .where("code", "==", code)
+          .limit(1)
+          .get();
+        if (!dup.empty && dup.docs[0]!.id !== id) {
+          return res.status(409).json({ error: "duplicate_code", message: `code "${code}" already exists` });
+        }
+      }
+      patch.code = code;
+    }
+    if (body.label !== undefined) {
+      const label = String(body.label).trim();
+      if (!label) return res.status(400).json({ error: "validation_error", message: "label is required" });
+      patch.label = label;
+    }
+    if (body.values !== undefined) patch.values = normalizeVariantTypeValues(body.values);
+    if (body.sortOrder !== undefined) patch.sortOrder = Number(body.sortOrder) || 0;
+    if (body.active !== undefined) patch.active = body.active !== false;
+
+    await db.collection("variant-attribute-types").doc(id).update(patch);
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/variant-attribute-types/:id PUT] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** DELETE /inventory/variant-attribute-types/:id */
+router.delete("/variant-attribute-types/:id", async (req, res) => {
+  try {
+    const { companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { id } = req.params;
+    const current = await db.collection("variant-attribute-types").doc(id).get();
+    if (!current.exists) return res.status(200).json({ ok: true });
+    if (String(current.data()?.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    await db.collection("variant-attribute-types").doc(id).delete();
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/variant-attribute-types/:id DELETE] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PRODUCTS CRUD
@@ -654,6 +889,21 @@ function toProductRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record<s
     createBy: d.createBy ? String(d.createBy) : undefined,
     updateAt: d.updateAt ?? null,
     updateBy: d.updateBy ? String(d.updateBy) : undefined,
+    sku: d.sku ? String(d.sku) : undefined,
+    ecommerceStatus: String(d.ecommerceStatus ?? "active"),
+    imageUrls: Array.isArray(d.imageUrls) ? d.imageUrls.map(String) : [],
+    categoryPath: Array.isArray(d.categoryPath) ? d.categoryPath.map(String) : [],
+    variantAttributeTypeCodes: parseVariantAttributeTypeCodes(d.variantAttributeTypeCodes),
+    variantAttributeLabels: parseVariantAttributeLabels(d.variantAttributeLabels),
+    attributeDefinitions:
+      d.attributeDefinitions && typeof d.attributeDefinitions === "object" && !Array.isArray(d.attributeDefinitions)
+        ? Object.fromEntries(
+            Object.entries(d.attributeDefinitions as Record<string, unknown>).map(([k, v]) => [
+              k,
+              Array.isArray(v) ? v.map(String) : [],
+            ])
+          )
+        : {},
   };
 }
 
@@ -717,6 +967,15 @@ router.post("/products", async (req, res) => {
     }
     const unitFields = unitDenormalizedFirestoreFields(unitRow);
 
+    const typeCodes = parseVariantAttributeTypeCodes(body.variantAttributeTypeCodes);
+    const catalog = await loadVariantAttributeTypesByCode(db, companyId, accountId);
+    const typeCodesError = validateVariantAttributeTypeCodes(typeCodes, catalog);
+    if (typeCodesError) {
+      return res.status(400).json({ error: "validation_error", message: typeCodesError });
+    }
+    const attributeDefinitions = buildAttributeDefinitions(typeCodes, catalog);
+    const variantAttributeLabels = buildVariantAttributeLabels(typeCodes, catalog);
+
     const doc: Record<string, unknown> = {
       companyId,
       accountId,
@@ -734,6 +993,14 @@ router.post("/products", async (req, res) => {
       minStock: body.minStock != null ? Number(body.minStock) : null,
       maxStock: body.maxStock != null ? Number(body.maxStock) : null,
       active: body.active !== false,
+      // Campos e-commerce
+      sku: normalizeTextForFirestore(body.sku) || String(body.code ?? "").trim(),
+      categoryPath: Array.isArray(body.categoryPath) ? body.categoryPath.map(String) : [],
+      variantAttributeTypeCodes: typeCodes,
+      attributeDefinitions,
+      variantAttributeLabels,
+      ecommerceStatus: body.ecommerceStatus === "inactive" || body.ecommerceStatus === "discontinued" ? body.ecommerceStatus : "active",
+      imageUrls: Array.isArray(body.imageUrls) ? body.imageUrls.map(String) : [],
       createAt: now,
       createBy: uid,
       updateAt: now,
@@ -768,9 +1035,29 @@ router.put("/products/:id", async (req, res) => {
     const body = req.body ?? {};
     const patch: Record<string, unknown> = { updateAt: now, updateBy: uid };
 
-    const textFields = ["code", "name", "description", "categoryId", "categoryName", "taxAffectation"];
+    const textFields = ["code", "name", "description", "categoryId", "categoryName", "taxAffectation", "sku"];
     for (const f of textFields) {
       if (body[f] !== undefined) patch[f] = body[f] ? String(body[f]).trim() : undefined;
+    }
+    if (body.categoryPath !== undefined) {
+      patch.categoryPath = Array.isArray(body.categoryPath) ? body.categoryPath.map(String) : [];
+    }
+    if (body.variantAttributeTypeCodes !== undefined) {
+      const typeCodes = parseVariantAttributeTypeCodes(body.variantAttributeTypeCodes);
+      const catalog = await loadVariantAttributeTypesByCode(db, companyId, accountId);
+      const typeCodesError = validateVariantAttributeTypeCodes(typeCodes, catalog);
+      if (typeCodesError) {
+        return res.status(400).json({ error: "validation_error", message: typeCodesError });
+      }
+      patch.variantAttributeTypeCodes = typeCodes;
+      patch.attributeDefinitions = buildAttributeDefinitions(typeCodes, catalog);
+      patch.variantAttributeLabels = buildVariantAttributeLabels(typeCodes, catalog);
+    }
+    if (body.ecommerceStatus !== undefined) {
+      patch.ecommerceStatus = body.ecommerceStatus === "inactive" || body.ecommerceStatus === "discontinued" ? body.ecommerceStatus : "active";
+    }
+    if (body.imageUrls !== undefined) {
+      patch.imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.map(String) : [];
     }
     if (body.unitOfMeasureCode !== undefined || body.unitOfMeasureId !== undefined || body.unitOfMeasure !== undefined) {
       const unitRow = resolveUnitOfMeasureFromBody(body as Record<string, unknown>);
@@ -999,6 +1286,295 @@ router.delete("/warehouses/:id", async (req, res) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     console.error("[web/inventory/warehouses/:id DELETE] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VARIANTS CRUD — /inventory/products/:productId/variants
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function toVariantRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record<string, unknown> {
+  const d = doc.data() ?? {};
+  return {
+    id: doc.id,
+    productId: String(d.productId ?? ""),
+    companyId: String(d.companyId ?? ""),
+    accountId: String(d.accountId ?? ""),
+    sku: String(d.sku ?? ""),
+    attributes: normalizeAttributesInput(d.attributes),
+    salePrice: Number(d.salePrice) || 0,
+    salePricePromo: d.salePricePromo != null ? Number(d.salePricePromo) : null,
+    saleStart: d.saleStart ? String(d.saleStart) : undefined,
+    saleEnd: d.saleEnd ? String(d.saleEnd) : undefined,
+    weightKg: d.weightKg != null ? Number(d.weightKg) : undefined,
+    imageUrls: Array.isArray(d.imageUrls) ? d.imageUrls.map(String) : [],
+    active: d.active !== false,
+    updatedAt: d.updatedAt ?? null,
+  };
+}
+
+/** GET /inventory/products/:productId/variants */
+router.get("/products/:productId/variants", async (req, res) => {
+  try {
+    const { companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { productId } = req.params;
+    const product = await db.collection("products").doc(productId).get();
+    if (!product.exists || String(product.data()?.companyId ?? "").trim() !== companyId) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const snap = await db.collection("products").doc(productId).collection("variants").get();
+    const items = snap.docs.map(toVariantRecord);
+    return res.status(200).json({ items });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/products/:productId/variants GET] failed:", msg);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** GET /inventory/products/:productId/variants/:variantId */
+router.get("/products/:productId/variants/:variantId", async (req, res) => {
+  try {
+    const { companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { productId, variantId } = req.params;
+    const snap = await db.collection("products").doc(productId).collection("variants").doc(variantId).get();
+    if (!snap.exists) return res.status(404).json({ error: "not_found" });
+    const data = snap.data() ?? {};
+    if (String(data.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    return res.status(200).json(toVariantRecord(snap as any));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/products/:productId/variants/:variantId GET] failed:", msg);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** POST /inventory/products/:productId/variants */
+router.post("/products/:productId/variants", async (req, res) => {
+  try {
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { productId } = req.params;
+    const now = new Date();
+    const body = req.body ?? {};
+    const product = await db.collection("products").doc(productId).get();
+    if (!product.exists || String(product.data()?.companyId ?? "").trim() !== companyId) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const sku = String(body.sku ?? "").trim();
+    const parentSku = String(product.data()?.sku ?? "").trim();
+    const skuParentError = validateVariantSkuAgainstParent(parentSku, sku);
+    if (skuParentError) {
+      return res.status(400).json({ error: "validation_error", message: skuParentError });
+    }
+    const dup = await db.collection("products").doc(productId).collection("variants")
+      .where("sku", "==", sku).where("companyId", "==", companyId).limit(1).get();
+    if (!dup.empty) return res.status(409).json({ error: "duplicate_sku", message: `SKU "${sku}" already exists` });
+
+    const productTypeCodes = parseVariantAttributeTypeCodes(product.data()?.variantAttributeTypeCodes);
+    const attributes = normalizeAttributesInput(body.attributes);
+    if (Object.keys(attributes).length > 0) {
+      const catalog = await loadVariantAttributeTypesByCode(db, companyId, accountId);
+      const attrError = validateVariantAttributes(attributes, productTypeCodes, catalog);
+      if (attrError) {
+        return res.status(400).json({ error: "validation_error", message: attrError });
+      }
+    } else if (productTypeCodes.length > 0 && body.attributes !== undefined) {
+      return res.status(400).json({
+        error: "validation_error",
+        message: "attributes is required when the product has variant attribute types configured",
+      });
+    }
+
+    const docRef = db.collection("products").doc(productId).collection("variants").doc();
+    await db.collection("products").doc(productId).update({ updateAt: now, updateBy: uid });
+    await docRef.set({
+      productId,
+      companyId,
+      accountId,
+      sku,
+      attributes,
+      salePrice: Number(body.salePrice) || 0,
+      salePricePromo: body.salePricePromo != null ? Number(body.salePricePromo) : null,
+      saleStart: body.saleStart ? String(body.saleStart) : "",
+      saleEnd: body.saleEnd ? String(body.saleEnd) : "",
+      weightKg: body.weightKg != null ? Number(body.weightKg) : null,
+      imageUrls: Array.isArray(body.imageUrls) ? body.imageUrls.map(String) : [],
+      active: body.active !== false,
+      updatedAt: now,
+    });
+    const nowStr = now.toISOString();
+    const { emit } = await import("../integration/integration-events.js");
+    emit({
+      companyId,
+      accountId,
+      type: "price_updated",
+      payload: {
+        sku,
+        productId,
+        variantId: docRef.id,
+        sale_price: Number(body.salePrice) || 0,
+        sale_price_promo: body.salePricePromo != null ? Number(body.salePricePromo) : null,
+        updatedAt: nowStr,
+      },
+    }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "product-variants", action: "create" }).catch(() => {});
+    updateEntitySearchIndex(db, {
+      accountId,
+      companyId,
+      entityId: "product",
+      action: "update",
+      recordId: productId,
+      fields: { code: sku },
+    }).catch(() => {});
+    return res.status(201).json({ ok: true, id: docRef.id });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/products/:productId/variants POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** PUT /inventory/products/:productId/variants/:variantId */
+router.put("/products/:productId/variants/:variantId", async (req, res) => {
+  try {
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { productId, variantId } = req.params;
+    const now = new Date();
+    const body = req.body ?? {};
+    const current = await db.collection("products").doc(productId).collection("variants").doc(variantId).get();
+    if (!current.exists) return res.status(404).json({ error: "not_found" });
+    const curData = current.data() ?? {};
+    if (String(curData.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const product = await db.collection("products").doc(productId).get();
+    if (!product.exists || String(product.data()?.companyId ?? "").trim() !== companyId) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const parentSku = String(product.data()?.sku ?? "").trim();
+    const patch: Record<string, unknown> = { updatedAt: now };
+    if (body.sku !== undefined) {
+      const newSku = String(body.sku).trim();
+      const skuParentError = validateVariantSkuAgainstParent(parentSku, newSku);
+      if (skuParentError) {
+        return res.status(400).json({ error: "validation_error", message: skuParentError });
+      }
+      const dup = await db
+        .collection("products")
+        .doc(productId)
+        .collection("variants")
+        .where("sku", "==", newSku)
+        .where("companyId", "==", companyId)
+        .get();
+      const takenByOther = dup.docs.some((d) => d.id !== variantId);
+      if (takenByOther) {
+        return res.status(409).json({ error: "duplicate_sku", message: `SKU "${newSku}" already exists` });
+      }
+      patch.sku = newSku;
+    }
+    if (body.attributes !== undefined) {
+      const productTypeCodes = parseVariantAttributeTypeCodes(product.data()?.variantAttributeTypeCodes);
+      const attributes = normalizeAttributesInput(body.attributes);
+      if (Object.keys(attributes).length > 0) {
+        const catalog = await loadVariantAttributeTypesByCode(db, companyId, accountId);
+        const attrError = validateVariantAttributes(attributes, productTypeCodes, catalog);
+        if (attrError) {
+          return res.status(400).json({ error: "validation_error", message: attrError });
+        }
+        patch.attributes = attributes;
+      } else {
+        patch.attributes = {};
+      }
+    }
+    if (body.salePrice !== undefined) patch.salePrice = Number(body.salePrice) || 0;
+    if (body.salePricePromo !== undefined) patch.salePricePromo = body.salePricePromo != null ? Number(body.salePricePromo) : null;
+    if (body.saleStart !== undefined) patch.saleStart = body.saleStart ? String(body.saleStart) : "";
+    if (body.saleEnd !== undefined) patch.saleEnd = body.saleEnd ? String(body.saleEnd) : "";
+    if (body.weightKg !== undefined) patch.weightKg = body.weightKg != null ? Number(body.weightKg) : null;
+    if (body.imageUrls !== undefined) patch.imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.map(String) : [];
+    if (body.active !== undefined) patch.active = body.active !== false;
+    await db.collection("products").doc(productId).collection("variants").doc(variantId).update(patch);
+    await db.collection("products").doc(productId).update({ updateAt: now, updateBy: uid });
+    const nowStr = now.toISOString();
+    const finalSku = String(patch.sku ?? curData.sku ?? "");
+    const finalSalePrice = Number(patch.salePrice ?? curData.salePrice ?? 0);
+    const finalSalePricePromo =
+      patch.salePricePromo !== undefined
+        ? patch.salePricePromo != null
+          ? Number(patch.salePricePromo)
+          : null
+        : curData.salePricePromo != null
+          ? Number(curData.salePricePromo)
+          : null;
+    const { emit } = await import("../integration/integration-events.js");
+    emit({
+      companyId,
+      accountId,
+      type: "price_updated",
+      payload: {
+        sku: finalSku,
+        productId,
+        variantId,
+        sale_price: finalSalePrice,
+        sale_price_promo: finalSalePricePromo,
+        updatedAt: nowStr,
+      },
+    }).catch(() => {});
+    trackEntityChange(db, { accountId, companyId, collectionName: "product-variants", action: "update" }).catch(() => {});
+    updateEntitySearchIndex(db, {
+      accountId,
+      companyId,
+      entityId: "product",
+      action: "update",
+      recordId: productId,
+      fields: { code: finalSku },
+    }).catch(() => {});
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/products/:productId/variants/:variantId PUT] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    return res.status(httpStatusForError(msg)).json({ error: msg });
+  }
+});
+
+/** DELETE /inventory/products/:productId/variants/:variantId */
+router.delete("/products/:productId/variants/:variantId", async (req, res) => {
+  try {
+    const { uid, accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { productId, variantId } = req.params;
+    const current = await db.collection("products").doc(productId).collection("variants").doc(variantId).get();
+    if (!current.exists) return res.status(200).json({ ok: true });
+    const data = current.data() ?? {};
+    if (String(data.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    await db.collection("products").doc(productId).collection("variants").doc(variantId).delete();
+    const now = new Date();
+    await db.collection("products").doc(productId).update({ updateAt: now, updateBy: uid });
+    trackEntityChange(db, { accountId, companyId, collectionName: "product-variants", action: "delete" }).catch(() => {});
+    updateEntitySearchIndex(db, {
+      accountId,
+      companyId,
+      entityId: "product",
+      action: "update",
+      recordId: productId,
+      fields: { code: String(data.sku ?? "") },
+    }).catch(() => {});
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/inventory/products/:productId/variants/:variantId DELETE] failed:", msg);
     if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(httpStatusForError(msg)).json({ error: msg });
   }

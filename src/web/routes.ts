@@ -808,6 +808,10 @@ webRouter.post("/master/clients", async (req, res) => {
         defaultServiceTimeMin: Number(logistics.defaultServiceTimeMin) || 0,
       },
       status: CLIENT_STATUSES.includes(String(body.status)) ? body.status : "active",
+      externalIds:
+        body.externalIds && typeof body.externalIds === "object"
+          ? (body.externalIds as Record<string, string>)
+          : {},
       ...(fiscal ? {
         fiscal: {
           address: normalizeText(fiscal.address),
@@ -898,6 +902,9 @@ webRouter.put("/master/clients/:id", async (req, res) => {
           ubigeo: normalizeText(f?.ubigeo),
         };
       }
+    }
+    if (body.externalIds !== undefined && typeof body.externalIds === "object") {
+      patch.externalIds = body.externalIds as Record<string, string>;
     }
     await db.collection("clients").doc(id).update(patch);
     updateEntitySearchIndex(db, { accountId, companyId, entityId: "client", action: "update", recordId: id, fields: { code: normalizeText(body.code), businessName: normalizeText(body.businessName), documentNumber: normalizeText(body.documentNumber) } }).catch(() => {});

@@ -543,6 +543,12 @@ function toSaleOrderRecord(doc: FirebaseFirestore.QueryDocumentSnapshot): Record
     locationName: normalizeText(d.locationName),
     companyId: normalizeText(d.companyId),
     accountId: normalizeText(d.accountId),
+    channel: normalizeText(d.channel),
+    externalId: normalizeText(d.externalId),
+    paymentStatus: normalizeText(d.paymentStatus),
+    wcCustomerExternalId: normalizeText(d.wcCustomerExternalId),
+    integrationSyncStatus: normalizeText(d.integrationSyncStatus),
+    integrationLastError: normalizeText(d.integrationLastError),
     createAt: d.createAt ?? null,
     createBy: normalizeText(d.createBy),
     updateAt: d.updateAt ?? null,
@@ -556,20 +562,25 @@ router.get("/sale-orders", async (req, res) => {
     const { accountId, companyId } = await requireCompanyScope(req as any);
     const db = getWebFirestore();
     const locationId = String(req.query?.locationId ?? "").trim();
-    let snap;
+    const channel = String(req.query?.channel ?? "").trim();
+    const externalId = String(req.query?.externalId ?? "").trim();
+
+    let query: FirebaseFirestore.Query = db
+      .collection("sale-orders")
+      .where("companyId", "==", companyId)
+      .where("accountId", "==", accountId);
+
     if (locationId) {
-      snap = await db
-        .collection("sale-orders")
-        .where("companyId", "==", companyId)
-        .where("locationId", "==", locationId)
-        .get();
-    } else {
-      snap = await db
-        .collection("sale-orders")
-        .where("companyId", "==", companyId)
-        .where("accountId", "==", accountId)
-        .get();
+      query = query.where("locationId", "==", locationId);
     }
+    if (channel) {
+      query = query.where("channel", "==", channel);
+    }
+    if (externalId) {
+      query = query.where("externalId", "==", externalId);
+    }
+
+    const snap = await query.get();
     const items = snap.docs.map(toSaleOrderRecord);
     res.status(200).json({ items, total: items.length });
   } catch (e) {
@@ -626,6 +637,17 @@ router.post("/sale-orders", async (req, res) => {
       status: normalizeText(body.status) || "draft",
       locationId: normalizeText(body.locationId),
       locationName: normalizeText(body.locationName),
+      channel: normalizeTextForFirestore(body.channel) || "erp",
+      externalId: normalizeTextForFirestore(body.externalId),
+      paymentStatus: normalizeTextForFirestore(body.paymentStatus) || "unknown",
+      wcCustomerExternalId: normalizeTextForFirestore(body.wcCustomerExternalId),
+      integrationSyncStatus: normalizeTextForFirestore(body.integrationSyncStatus) || "none",
+      integrationLastError: normalizeTextForFirestore(body.integrationLastError),
+      shipmentCarrier: "",
+      shipmentTrackingNumber: "",
+      shipmentTrackingUrl: "",
+      shipmentStatus: "",
+      invoiceId: "",
       createAt: now,
       createBy: uid,
       updateAt: now,
@@ -681,6 +703,8 @@ router.put("/sale-orders/:id", async (req, res) => {
     const safeFields = [
       "code", "clientId", "clientName", "quotationId", "issueDate", "expectedDeliveryDate",
       "notes", "status", "locationId", "locationName",
+      "channel", "externalId", "paymentStatus", "wcCustomerExternalId",
+      "integrationSyncStatus", "integrationLastError",
     ];
     for (const f of safeFields) {
       if (body[f] !== undefined) patch[f] = normalizeTextForFirestore(body[f]);
@@ -694,6 +718,18 @@ router.put("/sale-orders/:id", async (req, res) => {
     if (body.total !== undefined) patch.total = Number(body.total) || 0;
 
     await db.collection("sale-orders").doc(id).update(patch);
+
+    // Emit order_status_changed event if status changed
+    const oldStatus = normalizeText(currentData.status);
+    const newStatus = normalizeText(body.status);
+    if (newStatus && newStatus !== oldStatus) {
+      const { emit } = await import("../integration/integration-events.js");
+      emit({
+        companyId, accountId,
+        type: "order_status_changed",
+        payload: { orderId: id, externalId: normalizeText(body.externalId) || normalizeText(currentData.externalId), status: newStatus, previousStatus: oldStatus, updatedAt: now.toISOString() },
+      }).catch(() => {});
+    }
     updateEntitySearchIndex(db, { accountId, companyId, entityId: "sale-order", action: "update", recordId: id, fields: { code: normalizeText(body.code), clientName: normalizeText(body.clientName), status: normalizeText(body.status) || "draft" } }).catch(() => {});
     return res.status(200).json({ ok: true });
   } catch (e) {
@@ -1211,6 +1247,41 @@ router.post("/sale-orders/:id/dispatch", async (req, res) => {
       return res.status(404).json({ error: "not_found" });
     }
 
+    return res.status(httpStatus(msg)).json({ error: msg });
+  }
+});
+
+/** POST /sales/sale-orders/:id/integration/retry-webhook — Reenvía webhook fallido */
+router.post("/sale-orders/:id/integration/retry-webhook", async (req, res) => {
+  try {
+    const { accountId, companyId } = await requireCompanyScope(req as any);
+    const db = getWebFirestore();
+    const { id } = req.params;
+    const order = await db.collection("sale-orders").doc(id).get();
+    if (!order.exists) return res.status(404).json({ error: "not_found" });
+    const data = order.data() ?? {};
+    if (String(data.companyId ?? "").trim() !== companyId) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const outboxSnap = await db.collection("integration-webhook-outbox")
+      .where("companyId", "==", companyId)
+      .where("status", "in", ["pending", "failed"])
+      .limit(20)
+      .get();
+    let resetCount = 0;
+    for (const doc of outboxSnap.docs) {
+      await doc.ref.update({ status: "pending", attempts: 0, lastError: "", nextRetryAt: new Date() });
+      resetCount++;
+    }
+    if (resetCount > 0) {
+      const { processOutbox } = await import("../integration/integration-webhook.dispatcher.js");
+      setImmediate(() => { processOutbox().catch(() => {}); });
+    }
+    res.status(200).json({ ok: true, resetCount });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown_error";
+    console.error("[web/sales/sale-orders/:id/integration/retry-webhook POST] failed:", msg);
+    if (e instanceof Error && e.stack) console.error(e.stack);
     return res.status(httpStatus(msg)).json({ error: msg });
   }
 });

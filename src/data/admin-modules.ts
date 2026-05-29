@@ -65,6 +65,26 @@ export const ADMIN_MODULES_CATALOG: ModuleRecord[] = [
   ]),
   withPermissions("plan", "Planes", []),
   withPermissions("subscription", "Suscripciones", []),
+  withPermissions("integration-credential", "Credenciales de integración", [
+    { order: 1, name: "label", header: "Label", filter: true },
+    { order: 2, name: "integrator", header: "Integrador", filter: true },
+    { order: 3, name: "apiKey", header: "API Key", filter: true },
+    { order: 4, name: "syncMode", header: "Modo sync", filter: true, format: "label" },
+    { order: 5, name: "status", header: "Estado", filter: true, format: "status" },
+    { order: 6, name: "lastUsedAt", header: "Último uso", filter: false, format: "datetime" },
+  ]),
+  withPermissions(
+    "integration-api-docs",
+    "Documentación API de integración",
+    [],
+    [{ code: "view", label: "Ver", description: "Permite ver la documentación OpenAPI de la API v1." }]
+  ),
+  withPermissions("integration-webhook-outbox", "Webhooks de integración (outbox)", [
+    { order: 1, name: "event", header: "Evento", filter: true },
+    { order: 2, name: "status", header: "Estado", filter: true, format: "status" },
+    { order: 3, name: "attempts", header: "Intentos", filter: true },
+    { order: 4, name: "lastError", header: "Error", filter: true },
+  ]),
 ];
 
 export function getAdminModuleById(id: string): ModuleRecord | null {
