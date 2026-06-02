@@ -37,7 +37,8 @@ function tryReadServiceAccountFromFile(pathLike: string | undefined): admin.Serv
  * Firebase Admin App (proyecto unificado por ambiente).
  *
  * Variables:
- * - FIREBASE_PROJECT_ID (opcional si el JSON trae `project_id`)
+ * - FIREBASE_PROJECT_ID (opcional si el JSON trae `project_id`; en Cloud Run suele inferirse de GOOGLE_CLOUD_PROJECT)
+ * - FIREBASE_STORAGE_BUCKET (opcional; default `{projectId}.firebasestorage.app`)
  * - FIREBASE_SERVICE_ACCOUNT_PATH (opcional)
  * - FIREBASE_SERVICE_ACCOUNT_JSON (opcional)
  *
@@ -50,11 +51,22 @@ export function getFirebaseApp() {
   const sa =
     tryReadServiceAccountFromFile(process.env.FIREBASE_SERVICE_ACCOUNT_PATH) ??
     tryParseServiceAccountJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  const resolvedProjectId = projectId || sa?.projectId || "";
-  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || (resolvedProjectId ? `${resolvedProjectId}.firebasestorage.app` : undefined);
+  const resolvedProjectId =
+    projectId ||
+    sa?.projectId ||
+    String(process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCP_PROJECT ?? "").trim();
+  const storageBucketExplicit = String(process.env.FIREBASE_STORAGE_BUCKET ?? "").trim();
+  const storageBucket =
+    storageBucketExplicit ||
+    (resolvedProjectId ? `${resolvedProjectId}.firebasestorage.app` : undefined);
+  if (!storageBucket) {
+    throw new Error(
+      "FIREBASE_STORAGE_BUCKET or FIREBASE_PROJECT_ID (or GOOGLE_CLOUD_PROJECT on Cloud Run) is required for Storage"
+    );
+  }
   // eslint-disable-next-line no-console
   console.log(
-    `[firebase-admin] Initializing app (projectId=${resolvedProjectId || "ADC-default"})`
+    `[firebase-admin] Initializing app (projectId=${resolvedProjectId || "ADC-default"}, storageBucket=${storageBucket})`
   );
   firebaseApp = admin.initializeApp(
     {

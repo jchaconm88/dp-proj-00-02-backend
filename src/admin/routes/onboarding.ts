@@ -184,6 +184,7 @@ router.post("/bootstrap-web-tenant", async (req, res) => {
     const name = String(req.body?.companyName ?? req.body?.name ?? "").trim();
     const webUserEmail = String(req.body?.webUserEmail ?? req.body?.firstUserEmail ?? "").trim().toLowerCase();
     const webUserDisplayName = String(req.body?.webUserDisplayName ?? req.body?.firstUserDisplayName ?? "").trim();
+    const passwordFromClient = String(req.body?.password ?? "").trim();
     const taxId = req.body?.taxId !== undefined ? String(req.body.taxId).trim() : "";
     const code = req.body?.code !== undefined ? String(req.body.code).trim() : "";
 
@@ -210,7 +211,9 @@ router.post("/bootstrap-web-tenant", async (req, res) => {
       const userRecord = await wAuth.getUserByEmail(webUserEmail);
       authUid = userRecord.uid;
     } catch {
-      generatedPassword = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      generatedPassword =
+        passwordFromClient ||
+        Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       const newUser = await wAuth.createUser({
         email: webUserEmail,
         displayName: webUserDisplayName || undefined,

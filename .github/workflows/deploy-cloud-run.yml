@@ -123,13 +123,21 @@ jobs:
           )
           # gcloud interpreta la coma como separador entre VAR=val de --update-env-vars.
           # Pasamos orígenes unidos con |; el backend acepta comas o | en CORS_ORIGINS.
+          ENV_VARS="FIREBASE_PROJECT_ID=${GCP_PROJECT_EFFECTIVE}"
+          if [[ -n "${FIREBASE_STORAGE_BUCKET_EFFECTIVE:-}" ]]; then
+            ENV_VARS+=",FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET_EFFECTIVE}"
+          else
+            ENV_VARS+=",FIREBASE_STORAGE_BUCKET=${GCP_PROJECT_EFFECTIVE}.firebasestorage.app"
+          fi
           if [[ -n "${CORS_ORIGINS_EFFECTIVE:-}" ]]; then
             CORS_PIPE="${CORS_ORIGINS_EFFECTIVE//,/\|}"
-            args+=(--update-env-vars "CORS_ORIGINS=${CORS_PIPE}")
+            ENV_VARS+=",CORS_ORIGINS=${CORS_PIPE}"
           fi
+          args+=(--update-env-vars "${ENV_VARS}")
           gcloud "${args[@]}"
         env:
           GCP_PROJECT_EFFECTIVE: ${{ vars.GCP_PROJECT_ID }}
           CLOUD_RUN_RUNTIME_SA_EFFECTIVE: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
           CLOUD_RUN_SERVICE_NAME_EFFECTIVE: ${{ vars.CLOUD_RUN_SERVICE_NAME || 'dp-proj-00-02-backend' }}
           CORS_ORIGINS_EFFECTIVE: ${{ vars.CORS_ORIGINS }}
+          FIREBASE_STORAGE_BUCKET_EFFECTIVE: ${{ vars.FIREBASE_STORAGE_BUCKET }}
