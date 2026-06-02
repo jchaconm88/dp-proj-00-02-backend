@@ -1,26 +1,26 @@
 import { getWebFirestore } from "../lib/firebase-admin.js";
 import crypto from "node:crypto";
 
-const MAX_ATTEMPTS = 4;
-const BACKOFF_SECONDS = [30, 120, 600];
-
 /**
- * Intenta enviar webhooks pendientes en la outbox.
- * Se invoca en background tras emit() o desde un endpoint interno.
+ * Envía webhooks pendientes en la outbox.
+ * Sin reintentos: si falla, se marca como "failed" inmediatamente.
  */
 export async function processOutbox(): Promise<{ sent: number; failed: number }> {
   const db = getWebFirestore();
+  console.log("[processOutbox] Querying pending outbox entries...");
   const snap = await db.collection("integration-webhook-outbox")
     .where("status", "==", "pending")
-    .where("nextRetryAt", "<=", new Date())
     .limit(20)
     .get();
+
+  console.log(`[processOutbox] Found ${snap.size} pending entries`);
 
   let sent = 0;
   let failed = 0;
 
   for (const doc of snap.docs) {
     const data = doc.data() ?? {};
+    console.log(`[processOutbox] Processing entry ${doc.id}: event=${data.event}, credentialId=${data.credentialId}`);
     const credentialSnap = await db.collection("integration-credentials").doc(data.credentialId).get();
     if (!credentialSnap.exists) {
       await doc.ref.update({ status: "failed", lastError: "Credential not found" });
@@ -35,6 +35,8 @@ export async function processOutbox(): Promise<{ sent: number; failed: number }>
       failed++;
       continue;
     }
+
+    console.log(`[processOutbox] Sending to: ${webhookUrl}`);
 
     const body = JSON.stringify({
       event: data.event,
@@ -55,26 +57,28 @@ export async function processOutbox(): Promise<{ sent: number; failed: number }>
         signal: AbortSignal.timeout(15000),
       });
 
+      console.log(`[processOutbox] Response: ${response.status} ${response.statusText}`);
+
       if (response.ok) {
+        const responseBody = await response.text();
+        console.log(`[processOutbox] Success response body: ${responseBody.substring(0, 200)}`);
         await doc.ref.update({ status: "sent", lastError: "" });
         sent++;
       } else {
-        throw new Error(`HTTP ${response.status}`);
+        const errorBody = await response.text();
+        const errorMsg = `HTTP ${response.status}: ${errorBody.substring(0, 200)}`;
+        console.log(`[processOutbox] Failed: ${errorMsg}`);
+        await doc.ref.update({ status: "failed", lastError: errorMsg });
+        failed++;
       }
     } catch (err) {
-      const attempts = Number(data.attempts ?? 0) + 1;
       const errorMsg = err instanceof Error ? err.message : "unknown";
-      if (attempts >= MAX_ATTEMPTS) {
-        await doc.ref.update({ status: "failed", attempts, lastError: errorMsg });
-        failed++;
-      } else {
-        const backoff = BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)] ?? 600;
-        const nextRetry = new Date(Date.now() + backoff * 1000);
-        await doc.ref.update({ status: "pending", attempts, lastError: errorMsg, nextRetryAt: nextRetry });
-        failed++;
-      }
+      console.log(`[processOutbox] Exception: ${errorMsg}`);
+      await doc.ref.update({ status: "failed", lastError: errorMsg });
+      failed++;
     }
   }
 
+  console.log(`[processOutbox] Done: sent=${sent}, failed=${failed}`);
   return { sent, failed };
 }

@@ -50,14 +50,17 @@ export function getFirebaseApp() {
   const sa =
     tryReadServiceAccountFromFile(process.env.FIREBASE_SERVICE_ACCOUNT_PATH) ??
     tryParseServiceAccountJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  const resolvedProjectId = projectId || sa?.projectId || "";
+  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || (resolvedProjectId ? `${resolvedProjectId}.firebasestorage.app` : undefined);
   // eslint-disable-next-line no-console
   console.log(
-    `[firebase-admin] Initializing app (projectId=${projectId || sa?.projectId || "ADC-default"})`
+    `[firebase-admin] Initializing app (projectId=${resolvedProjectId || "ADC-default"})`
   );
   firebaseApp = admin.initializeApp(
     {
-      projectId: projectId || sa?.projectId || undefined,
+      projectId: resolvedProjectId || undefined,
       credential: sa ? admin.credential.cert(sa) : admin.credential.applicationDefault(),
+      storageBucket,
     },
     "firebase"
   );
@@ -82,4 +85,9 @@ export function getWebAuth() {
 /** Firestore del proyecto Web (datos de la app: pedidos, clientes, etc). */
 export function getWebFirestore() {
   return getFirebaseApp().firestore();
+}
+
+/** Storage del proyecto (Google Cloud Storage bucket por defecto). */
+export function getWebStorage() {
+  return getFirebaseApp().storage().bucket();
 }

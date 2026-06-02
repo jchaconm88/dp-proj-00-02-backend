@@ -36,11 +36,15 @@ catalogRouter.get("/", async (req, res) => {
       const data = doc.data() ?? {};
       const variantsSnap = await db.collection("products").doc(doc.id).collection("variants").get();
       const variants = variantsSnap.docs.map((v) => ({ id: v.id, ...v.data() }));
-      return toProductResponse({ id: doc.id, ...data }, variants);
+      return await toProductResponse({ id: doc.id, ...data }, variants, db);
     }));
 
+    const visibleProducts = products.filter(
+      (p) => p.visible_in_store === true && p.sku && p.sku.trim().length > 0
+    );
+
     res.status(200).json({
-      data: products,
+      data: visibleProducts,
       pagination: { total, page, per_page: perPage, total_pages: totalPages },
     });
   } catch (e) {
@@ -67,7 +71,7 @@ catalogRouter.get("/:sku", async (req, res) => {
       const data = doc.data();
       const variantsSnap = await db.collection("products").doc(doc.id).collection("variants").get();
       const variants = variantsSnap.docs.map((v) => ({ id: v.id, ...v.data() }));
-      return res.status(200).json(toProductResponse({ id: doc.id, ...data }, variants));
+      return res.status(200).json(await toProductResponse({ id: doc.id, ...data }, variants, db));
     }
 
     const variantSnap = await db.collectionGroup("variants")
@@ -85,7 +89,7 @@ catalogRouter.get("/:sku", async (req, res) => {
         const pData = productDoc.data() ?? {};
         const allVariantsSnap = await db.collection("products").doc(productId).collection("variants").get();
         const allVariants = allVariantsSnap.docs.map((v) => ({ id: v.id, ...v.data() }));
-        return res.status(200).json(toProductResponse({ id: productDoc.id, ...pData }, allVariants));
+        return res.status(200).json(await toProductResponse({ id: productDoc.id, ...pData }, allVariants, db));
       }
     }
 

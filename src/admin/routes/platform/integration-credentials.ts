@@ -74,7 +74,7 @@ router.get("/:id", async (req, res) => {
       integrator: data.integrator,
       apiKey: data.apiKey,
       webhookUrl: data.webhookUrl ?? null,
-      webhookSecret: data.webhookSecret ? "(set)" : null,
+      webhookSecret: data.webhookSecret ?? null,
       defaultWarehouseCode: data.defaultWarehouseCode,
       priceListCode: data.priceListCode,
       syncMode: data.syncMode,
